@@ -1,0 +1,14 @@
+data/
+*.pyc
+__pycache__/
+*.egg-info/
+dist/
+build/
+.eggs/
+wandb/
+outputs/
+checkpoints/
+*.pt
+*.pth
+.DS_Store
+.worktrees/
