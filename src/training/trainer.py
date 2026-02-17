@@ -71,8 +71,14 @@ class Trainer:
         debug_cfg = self.training_cfg.get("debug", {})
         self.fast_dev_run = debug_cfg.get("fast_dev_run", False)
 
+        # Device
+        device_str = self.training_cfg.get("device", "auto")
+        self.device = self._resolve_device(device_str)
+        cprint(f"Using device: {self.device}", "cyan")
+
         # Build components
         self.model = self._build_model()
+        self.model.to(self.device)
         self.loss_fn = self._build_loss()
         self.optimizer = build_optimizer(self.optimizer_cfg, self.model)
         self.scheduler = build_scheduler(
@@ -83,6 +89,13 @@ class Trainer:
         # Initialize model with dataset normalization
         self.model.get_normalize_u(dataset)
         self.model.train()
+
+    @staticmethod
+    def _resolve_device(device_str: str) -> torch.device:
+        """Resolve 'auto' to cuda/cpu, or pass through explicit device strings."""
+        if device_str == "auto":
+            return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        return torch.device(device_str)
 
     def _build_model(self):
         """Build TorchIEKF model from config."""
@@ -335,11 +348,11 @@ class Trainer:
 
         # Random subsequence sampling
         N0, N_end = self._get_start_and_end(self.seq_dim, u)
-        t = t[N0:N_end].double()
-        ang_gt = ang_gt[N0:N_end].double()
-        p_gt = (p_gt[N0:N_end] - p_gt[N0]).double()
-        v_gt = v_gt[N0:N_end].double()
-        u = u[N0:N_end].double()
+        t = t[N0:N_end].double().to(self.device)
+        ang_gt = ang_gt[N0:N_end].double().to(self.device)
+        p_gt = (p_gt[N0:N_end] - p_gt[N0]).double().to(self.device)
+        v_gt = v_gt[N0:N_end].double().to(self.device)
+        u = u[N0:N_end].double().to(self.device)
 
         # Add noise during training
         u = self.dataset.add_noise(u)
@@ -374,17 +387,19 @@ class Trainer:
         for dataset_name, Ns in self.dataset.datasets_train_filter.items():
             t, ang_gt, p_gt, v_gt, u = self.dataset.get_data(dataset_name)
             end = Ns[1] if Ns[1] is not None else p_gt.shape[0]
-            p_gt = p_gt[:end].double()
+            p_gt = p_gt[:end].double().to(self.device)
             ang_gt_sub = ang_gt[:end]
 
             # Build rotation matrices from Euler angles
-            Rot_gt = torch.zeros(end, 3, 3)
+            Rot_gt = torch.zeros(
+                end, 3, 3, dtype=torch.float64, device=self.device
+            )
             for k in range(end):
                 Rot_gt[k] = TorchIEKF.from_rpy_torch(
                     ang_gt_sub[k][0].double(),
                     ang_gt_sub[k][1].double(),
                     ang_gt_sub[k][2].double(),
-                ).double()
+                ).to(self.device)
 
             rpe_data = self.loss_fn.precompute(Rot_gt, p_gt)
             if len(rpe_data[0]) > 0:
@@ -416,5 +431,5 @@ class Trainer:
 
     def load_model(self, path):
         """Load model state dict."""
-        state_dict = torch.load(path, map_location="cpu")
+        state_dict = torch.load(path, map_location=self.device)
         self.model.load_state_dict(state_dict)

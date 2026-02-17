@@ -37,16 +37,26 @@ class InitProcessCovNet(BaseCovarianceNet):
 
         self.output_dim = output_dim
 
-        # Beta parameters (not learned, used for scaling in forward pass)
-        self.beta_process = initial_beta * torch.ones(2).double()
-        self.beta_initialization = initial_beta * torch.ones(2).double()
+        # Beta parameters (not learned, registered as buffers for device tracking)
+        self.register_buffer(
+            "beta_process",
+            initial_beta * torch.ones(2).double(),
+        )
+        self.register_buffer(
+            "beta_initialization",
+            initial_beta * torch.ones(2).double(),
+        )
 
         # Learnable initial covariance scaling
-        self.factor_initial_covariance = nn.Linear(1, output_dim, bias=False).double()
+        self.factor_initial_covariance = nn.Linear(
+            1, output_dim, bias=False
+        ).double()
         self.factor_initial_covariance.weight.data[:] /= weight_scale
 
         # Learnable process covariance scaling
-        self.factor_process_covariance = nn.Linear(1, output_dim, bias=False).double()
+        self.factor_process_covariance = nn.Linear(
+            1, output_dim, bias=False
+        ).double()
         self.factor_process_covariance.weight.data[:] /= weight_scale
 
         self.tanh = nn.Tanh()
@@ -63,7 +73,10 @@ class InitProcessCovNet(BaseCovarianceNet):
             Tensor of shape (output_dim,) with multiplicative scaling factors.
             Values range from 0.1 to 10.0.
         """
-        alpha = self.factor_initial_covariance(torch.ones(1).double()).squeeze()
+        device = self.factor_initial_covariance.weight.device
+        alpha = self.factor_initial_covariance(
+            torch.ones(1, dtype=torch.float64, device=device)
+        ).squeeze()
         beta = 10 ** (self.tanh(alpha))
         return beta
 
@@ -75,7 +88,10 @@ class InitProcessCovNet(BaseCovarianceNet):
             Tensor of shape (output_dim,) with multiplicative scaling factors.
             Values range from 0.1 to 10.0.
         """
-        alpha = self.factor_process_covariance(torch.ones(1).double())
+        device = self.factor_process_covariance.weight.device
+        alpha = self.factor_process_covariance(
+            torch.ones(1, dtype=torch.float64, device=device)
+        )
         beta = 10 ** (self.tanh(alpha))
         return beta
 

@@ -106,8 +106,13 @@ class NeuralODEDynamics(nn.Module):
         use_classical_residual: If True, add classical physics as residual (default: True)
     """
 
-    def __init__(self, imu_dim=6, hidden_dim=32, solver="euler",
-                 use_classical_residual=True):
+    def __init__(
+        self,
+        imu_dim=6,
+        hidden_dim=32,
+        solver="euler",
+        use_classical_residual=True,
+    ):
         super().__init__()
 
         self.solver = solver
@@ -146,7 +151,9 @@ class NeuralODEDynamics(nn.Module):
         self.ode_func.set_imu_input(u)
 
         # Integrate ODE from t=0 to t=dt
-        t_span = torch.tensor([0.0, dt.item()]).double()
+        t_span = torch.tensor(
+            [0.0, dt.item()], dtype=torch.float64, device=state.device
+        )
         state_trajectory = odeint(
             self.ode_func, state, t_span, method=self.solver
         )
@@ -159,7 +166,7 @@ class NeuralODEDynamics(nn.Module):
         if self.use_classical_residual:
             acc_classical = Rot.mv(u[3:6] - b_acc) + g
             v_next = v_next + acc_classical * dt
-            p_next = p_next + v.clone() * dt + 0.5 * acc_classical * dt ** 2
+            p_next = p_next + v.clone() * dt + 0.5 * acc_classical * dt**2
 
         return v_next, p_next
 

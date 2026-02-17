@@ -24,7 +24,6 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from src.core.torch_iekf import TorchIEKF
-from src.core.numpy_iekf import NumPyIEKF
 from src.evaluation.metrics import (
     compute_rpe,
     compute_ate,
@@ -61,21 +60,25 @@ def test_sequence(iekf, dataset, dataset_name, cfg):
     with torch.no_grad():
         measurements_covs = iekf.forward_nets(u_normalized)
 
-    # Run NumPy filter for fast inference
-    numpy_iekf = NumPyIEKF()
-    Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i = numpy_iekf.run(
-        t.numpy(),
-        u.numpy(),
-        measurements_covs.numpy(),
-        v_gt[0].numpy(),
-        p_gt[0].numpy(),
-        ang_gt[0].numpy(),
-        iekf.P0.detach().numpy(),
-    )
+    # Run filter (torch, no grad) for fast inference
+    N = len(t)
+    with torch.no_grad():
+        Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i = iekf.run(
+            t, u, measurements_covs, v_gt, p_gt, N, ang_gt[0]
+        )
+
+    # Convert outputs to numpy
+    Rot = Rot.cpu().numpy()
+    v = v.cpu().numpy()
+    p = p.cpu().numpy()
+    b_omega = b_omega.cpu().numpy()
+    b_acc = b_acc.cpu().numpy()
 
     # Convert ground truth to numpy
     p_gt_np = (p_gt - p_gt[0]).numpy()
     ang_gt_np = ang_gt.numpy()
+    t_np = t.numpy()
+    measurements_covs_np = measurements_covs.cpu().numpy()
 
     # Build ground truth rotation matrices
     N = Rot.shape[0]
@@ -105,8 +108,8 @@ def test_sequence(iekf, dataset, dataset_name, cfg):
         "b_acc": b_acc,
         "p_gt": p_gt_np,
         "Rot_gt": Rot_gt,
-        "t": t.numpy(),
-        "measurements_covs": measurements_covs.numpy(),
+        "t": t_np,
+        "measurements_covs": measurements_covs_np,
         "name": dataset_name,
     }
 

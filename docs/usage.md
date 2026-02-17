@@ -298,9 +298,7 @@ configs/
 
 ```
 src/
-  core/               # IEKF filter implementations
-    base_filter.py     #   Abstract filter interface
-    numpy_iekf.py      #   NumPy IEKF (fast inference)
+  core/               # IEKF filter implementation
     torch_iekf.py      #   PyTorch IEKF (training + inference)
   models/              # Neural network architectures
     base_covariance_net.py
@@ -335,7 +333,7 @@ src/
 1. **`src/train.py`** reads the Hydra config and passes it to `Trainer`.
 2. **`Trainer`** builds a `TorchIEKF` model (with neural networks attached via the model registry), a loss function, an optimizer, and callbacks.
 3. Each training step: load a sequence from the dataset, sample a random subsequence, add IMU noise, run the neural networks to predict covariances, run the IEKF filter, compute RPE loss, backpropagate.
-4. **`src/test.py`** loads a trained checkpoint, runs the neural networks to get covariances, then runs the fast `NumPyIEKF` for inference, and computes evaluation metrics.
+4. **`src/test.py`** loads a trained checkpoint, runs `TorchIEKF` with `torch.no_grad()` to get covariances and filter output, and computes evaluation metrics.
 
 ---
 
@@ -347,7 +345,6 @@ python -m pytest tests/ -v
 
 # By component
 python -m pytest tests/test_geometry.py -v       # SO3/SE3 math
-python -m pytest tests/test_numpy_iekf.py -v     # NumPy filter
 python -m pytest tests/test_torch_iekf.py -v     # PyTorch filter
 python -m pytest tests/test_models.py -v         # Neural networks
 python -m pytest tests/test_datasets.py -v       # Data pipeline

@@ -1,17 +1,15 @@
 """
 PyTorch implementation of Invariant Extended Kalman Filter (IEKF).
 
-This module provides a PyTorch-based IEKF for training with neural networks
-that predict adaptive covariances. The filter can operate with or without
-learned covariance networks.
+This is the single IEKF implementation used for both training (with autograd)
+and inference (with torch.no_grad).  All computation is done in PyTorch which
+can target CPU or CUDA.
 """
 
 import torch
-import numpy as np
 import os
 from termcolor import cprint
 
-from src.core.numpy_iekf import NumPyIEKF
 from src.models import get_model
 
 
@@ -20,55 +18,160 @@ def isclose(mat1, mat2, tol=1e-10):
     return (mat1 - mat2).abs().lt(tol)
 
 
-class TorchIEKF(torch.nn.Module, NumPyIEKF):
+class TorchIEKF(torch.nn.Module):
     """
-    PyTorch implementation of IEKF with optional learned covariances.
+    PyTorch IEKF with optional learned covariance networks.
 
-    This implementation allows gradient flow for training neural networks
-    that predict adaptive measurement and process noise covariances.
+    Supports automatic differentiation for training neural networks that
+    predict adaptive measurement and process noise covariances.
 
-    The filter maintains the same mathematical structure as NumPyIEKF but
-    uses PyTorch tensors for automatic differentiation.
+    State vector: [Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i]
+    Covariance is 21-dimensional on the manifold tangent space.
     """
 
-    # PyTorch identity matrices
-    Id1 = torch.eye(1).double()
-    Id2 = torch.eye(2).double()
-    Id3 = torch.eye(3).double()
-    Id6 = torch.eye(6).double()
-    IdP = torch.eye(21).double()
+    # ------------------------------------------------------------------
+    # Default filter parameters
+    # ------------------------------------------------------------------
+    class Parameters:
+        """Default IEKF filter parameters."""
+
+        g = [0, 0, -9.80665]
+        """Gravity vector (m/s^2)."""
+
+        P_dim = 21
+        """Covariance dimension."""
+
+        Q_dim = 18
+        """Process noise covariance dimension."""
+
+        # Process noise covariances
+        cov_omega = 1e-3
+        cov_acc = 1e-2
+        cov_b_omega = 6e-9
+        cov_b_acc = 2e-4
+        cov_Rot_c_i = 1e-9
+        cov_t_c_i = 1e-9
+
+        # Measurement noise covariances
+        cov_lat = 0.2
+        cov_up = 300
+
+        # Initial state covariances
+        cov_Rot0 = 1e-3
+        cov_b_omega0 = 6e-3
+        cov_b_acc0 = 4e-3
+        cov_v0 = 1e-1
+        cov_Rot_c_i0 = 1e-6
+        cov_t_c_i0 = 5e-3
+
+        # Numerical parameters
+        n_normalize_rot = 100
+        n_normalize_rot_c_i = 1000
+        verbose = False
+
+        def __init__(self, **kwargs):
+            for key, value in kwargs.items():
+                setattr(self, key, value)
+
+    # ------------------------------------------------------------------
+    # Construction
+    # ------------------------------------------------------------------
 
     def __init__(self, parameter_class=None):
         """
         Initialize PyTorch IEKF.
 
         Args:
-            parameter_class: Parameter class (default: NumPyIEKF.Parameters)
+            parameter_class: Parameter class (default: TorchIEKF.Parameters)
         """
-        torch.nn.Module.__init__(self)
+        super().__init__()
 
-        # Initialize parameters (don't call NumPyIEKF.__init__ to avoid numpy Q)
         if parameter_class is None:
-            self.filter_parameters = NumPyIEKF.Parameters()
+            params = self.Parameters()
         else:
-            self.filter_parameters = parameter_class()
+            params = parameter_class()
 
-        # Copy parameters and build PyTorch matrices
-        self.set_param_attr()
+        # Copy scalar parameters as plain attributes
+        self._copy_scalar_params(params)
 
-        # Input normalization parameters (set during training)
+        # Register tensor-valued parameters as buffers
+        self.register_buffer("g", torch.tensor(params.g, dtype=torch.float64))
+        self.register_buffer(
+            "cov0_measurement",
+            torch.tensor([params.cov_lat, params.cov_up], dtype=torch.float64),
+        )
+
+        # Identity matrix buffers (moved automatically by model.to(device))
+        self.register_buffer("Id2", torch.eye(2, dtype=torch.float64))
+        self.register_buffer("Id3", torch.eye(3, dtype=torch.float64))
+        self.register_buffer("Id6", torch.eye(6, dtype=torch.float64))
+        self.register_buffer("IdP", torch.eye(self.P_dim, dtype=torch.float64))
+
+        # Process noise covariance buffer
+        self._register_Q()
+
+        # Input normalization parameters (set via get_normalize_u)
         self.u_loc = None
         self.u_std = None
 
-        # Note: cov0_measurement is set by set_param_attr() above
-
-        # Network components (None = use defaults)
+        # Optional neural network components
         self.initprocesscov_net = None
         self.mes_net = None
         self.dynamics_net = None
 
-        # Override IdP with PyTorch version
-        self.IdP = torch.eye(self.P_dim).double()
+    def _copy_scalar_params(self, params):
+        """Copy non-tensor, non-callable attributes from *params* to self."""
+        skip = {"g"}  # handled as buffers
+        for name in dir(params):
+            if name.startswith("_") or name in skip:
+                continue
+            val = getattr(params, name)
+            if callable(val):
+                continue
+            setattr(self, name, val)
+
+    def _register_Q(self):
+        """Build and register the process noise covariance matrix."""
+        q_vals = torch.tensor(
+            [
+                self.cov_omega,
+                self.cov_omega,
+                self.cov_omega,
+                self.cov_acc,
+                self.cov_acc,
+                self.cov_acc,
+                self.cov_b_omega,
+                self.cov_b_omega,
+                self.cov_b_omega,
+                self.cov_b_acc,
+                self.cov_b_acc,
+                self.cov_b_acc,
+                self.cov_Rot_c_i,
+                self.cov_Rot_c_i,
+                self.cov_Rot_c_i,
+                self.cov_t_c_i,
+                self.cov_t_c_i,
+                self.cov_t_c_i,
+            ],
+            dtype=torch.float64,
+        )
+        self.register_buffer("Q", torch.diag(q_vals))
+
+    # ------------------------------------------------------------------
+    # Device helpers
+    # ------------------------------------------------------------------
+
+    @property
+    def device(self) -> torch.device:
+        """Device the model lives on (inferred from registered buffers)."""
+        try:
+            return next(self.buffers()).device
+        except StopIteration:
+            return torch.device("cpu")
+
+    # ------------------------------------------------------------------
+    # Factory
+    # ------------------------------------------------------------------
 
     @classmethod
     def build_from_cfg(cls, cfg, parameter_class=None):
@@ -93,29 +196,18 @@ class TorchIEKF(torch.nn.Module, NumPyIEKF):
             "dynamics": "NeuralODEDynamics",
         }
 
-        # Build init/process covariance network
-        ipc_cfg = networks_cfg.get("init_process_cov", {})
-        if ipc_cfg.get("enabled", False):
-            type_name = ipc_cfg.get("type", _DEFAULT_TYPES["init_process_cov"])
-            iekf.initprocesscov_net = cls._build_network(
-                type_name, ipc_cfg.get("architecture", {})
-            )
-
-        # Build measurement covariance network
-        mes_cfg = networks_cfg.get("measurement_cov", {})
-        if mes_cfg.get("enabled", False):
-            type_name = mes_cfg.get("type", _DEFAULT_TYPES["measurement_cov"])
-            iekf.mes_net = cls._build_network(
-                type_name, mes_cfg.get("architecture", {})
-            )
-
-        # Build optional learned dynamics network
-        dyn_cfg = networks_cfg.get("dynamics", {})
-        if dyn_cfg.get("enabled", False):
-            type_name = dyn_cfg.get("type", _DEFAULT_TYPES["dynamics"])
-            iekf.dynamics_net = cls._build_network(
-                type_name, dyn_cfg.get("architecture", {})
-            )
+        for key, attr in [
+            ("init_process_cov", "initprocesscov_net"),
+            ("measurement_cov", "mes_net"),
+            ("dynamics", "dynamics_net"),
+        ]:
+            net_cfg = networks_cfg.get(key, {})
+            if net_cfg.get("enabled", False):
+                type_name = net_cfg.get("type", _DEFAULT_TYPES[key])
+                net = cls._build_network(
+                    type_name, net_cfg.get("architecture", {})
+                )
+                setattr(iekf, attr, net)
 
         return iekf
 
@@ -148,60 +240,9 @@ class TorchIEKF(torch.nn.Module, NumPyIEKF):
 
         return model_cls(**kwargs)
 
-    def set_param_attr(self):
-        """Set filter attributes from parameter class."""
-        # Get list of non-callable attributes
-        if self.filter_parameters is None:
-            return
-
-        attr_list = [
-            a
-            for a in dir(self.filter_parameters)
-            if not a.startswith("__")
-            and not callable(getattr(self.filter_parameters, a))
-        ]
-
-        # Copy attributes to filter instance
-        for attr in attr_list:
-            setattr(self, attr, getattr(self.filter_parameters, attr))
-
-        # Convert gravity to torch if needed
-        if hasattr(self, "g") and isinstance(self.g, np.ndarray):
-            self.g = torch.from_numpy(self.g).double()
-
-        # Build PyTorch-specific matrices
-        self._build_torch_Q()
-        if hasattr(self, "cov_lat") and hasattr(self, "cov_up"):
-            self.cov0_measurement = torch.Tensor(
-                [self.cov_lat, self.cov_up]
-            ).double()
-
-    def _build_torch_Q(self):
-        """Build process noise covariance matrix (PyTorch version)."""
-        self.Q = torch.diag(
-            torch.Tensor(
-                [
-                    self.cov_omega,
-                    self.cov_omega,
-                    self.cov_omega,
-                    self.cov_acc,
-                    self.cov_acc,
-                    self.cov_acc,
-                    self.cov_b_omega,
-                    self.cov_b_omega,
-                    self.cov_b_omega,
-                    self.cov_b_acc,
-                    self.cov_b_acc,
-                    self.cov_b_acc,
-                    self.cov_Rot_c_i,
-                    self.cov_Rot_c_i,
-                    self.cov_Rot_c_i,
-                    self.cov_t_c_i,
-                    self.cov_t_c_i,
-                    self.cov_t_c_i,
-                ]
-            )
-        ).double()
+    # ------------------------------------------------------------------
+    # Filter loop
+    # ------------------------------------------------------------------
 
     def run(self, t, u, measurements_covs, v_mes, p_mes, N, ang0):
         """
@@ -269,41 +310,7 @@ class TorchIEKF(torch.nn.Module, NumPyIEKF):
         return Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i
 
     def init_run(self, dt, u, p_mes, v_mes, N, ang0):
-        """Initialize filter state and covariance (PyTorch version)."""
-        Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i = self.init_saved_state(
-            dt, N, ang0
-        )
-        Rot[0] = self.from_rpy_torch(ang0[0], ang0[1], ang0[2])
-        v[0] = v_mes[0]
-        P = self.init_covariance()
-        return Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i, P
-
-    def init_covariance(self):
-        """
-        Initialize state covariance matrix (PyTorch version).
-
-        If initprocesscov_net is available, uses learned scaling factors.
-        Otherwise uses default covariances.
-        """
-        P = torch.zeros(self.P_dim, self.P_dim).double()
-
-        # Get scaling factors from network if available
-        if self.initprocesscov_net is not None:
-            beta = self.initprocesscov_net.init_cov(self)
-        else:
-            beta = torch.ones(6).double()
-
-        P[:2, :2] = self.cov_Rot0 * beta[0] * self.Id2
-        P[3:5, 3:5] = self.cov_v0 * beta[1] * self.Id2
-        P[9:12, 9:12] = self.cov_b_omega0 * beta[2] * self.Id3
-        P[12:15, 12:15] = self.cov_b_acc0 * beta[3] * self.Id3
-        P[15:18, 15:18] = self.cov_Rot_c_i0 * beta[4] * self.Id3
-        P[18:21, 18:21] = self.cov_t_c_i0 * beta[5] * self.Id3
-
-        return P
-
-    def init_saved_state(self, dt, N, ang0):
-        """Allocate memory for state trajectory (PyTorch version)."""
+        """Initialize filter state arrays and covariance."""
         Rot = dt.new_zeros(N, 3, 3)
         v = dt.new_zeros(N, 3)
         p = dt.new_zeros(N, 3)
@@ -311,8 +318,38 @@ class TorchIEKF(torch.nn.Module, NumPyIEKF):
         b_acc = dt.new_zeros(N, 3)
         Rot_c_i = dt.new_zeros(N, 3, 3)
         t_c_i = dt.new_zeros(N, 3)
-        Rot_c_i[0] = torch.eye(3).double()
-        return Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i
+
+        Rot_c_i[0] = self.Id3
+        Rot[0] = self.from_rpy_torch(ang0[0], ang0[1], ang0[2])
+        v[0] = v_mes[0]
+
+        P = self.init_covariance()
+        return Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i, P
+
+    def init_covariance(self):
+        """
+        Initialize state covariance matrix.
+
+        Uses learned scaling factors when ``initprocesscov_net`` is set.
+        """
+        P = self.IdP.new_zeros(self.P_dim, self.P_dim)
+
+        if self.initprocesscov_net is not None:
+            beta = self.initprocesscov_net.init_cov(self)
+        else:
+            beta = self.IdP.new_ones(6)
+
+        P[:2, :2] = self.cov_Rot0 * beta[0] * self.Id2
+        P[3:5, 3:5] = self.cov_v0 * beta[1] * self.Id2
+        P[9:12, 9:12] = self.cov_b_omega0 * beta[2] * self.Id3
+        P[12:15, 12:15] = self.cov_b_acc0 * beta[3] * self.Id3
+        P[15:18, 15:18] = self.cov_Rot_c_i0 * beta[4] * self.Id3
+        P[18:21, 18:21] = self.cov_t_c_i0 * beta[5] * self.Id3
+        return P
+
+    # ------------------------------------------------------------------
+    # Propagation (prediction)
+    # ------------------------------------------------------------------
 
     def propagate(
         self,
@@ -328,7 +365,7 @@ class TorchIEKF(torch.nn.Module, NumPyIEKF):
         dt,
     ):
         """
-        Propagate state forward (PyTorch version).
+        Propagate state forward one timestep.
 
         If dynamics_net is set, uses learned dynamics for velocity/position.
         Otherwise uses classical inertial kinematics.
@@ -357,7 +394,7 @@ class TorchIEKF(torch.nn.Module, NumPyIEKF):
         Rot_c_i = Rot_c_i_prev.clone()
         t_c_i = t_c_i_prev
 
-        # Propagate covariance (always classical for now)
+        # Propagate covariance
         P = self.propagate_cov_torch(
             P_prev, Rot_prev, v_prev, p_prev, b_omega_prev, b_acc_prev, u, dt
         )
@@ -367,7 +404,7 @@ class TorchIEKF(torch.nn.Module, NumPyIEKF):
     def propagate_cov_torch(
         self, P, Rot_prev, v_prev, p_prev, b_omega_prev, b_acc_prev, u, dt
     ):
-        """Propagate covariance matrix (PyTorch version)."""
+        """Propagate covariance matrix one timestep."""
         F = P.new_zeros(self.P_dim, self.P_dim)
         G = P.new_zeros(self.P_dim, self.Q.shape[0])
         Q = self.Q.clone()
@@ -399,13 +436,16 @@ class TorchIEKF(torch.nn.Module, NumPyIEKF):
 
         # Compute state transition matrix
         F_square = F.mm(F)
-        F_cube = F_square.mm(F)
-        Phi = self.IdP + F + 0.5 * F_square + (1.0 / 6.0) * F_cube
+        Phi = self.IdP + F + 0.5 * F_square + (1.0 / 6.0) * F_square.mm(F)
 
         # Propagate covariance
         P_new = Phi.mm(P + G.mm(Q).mm(G.t())).mm(Phi.t())
 
         return P_new
+
+    # ------------------------------------------------------------------
+    # Update (correction)
+    # ------------------------------------------------------------------
 
     def update(
         self,
@@ -421,7 +461,7 @@ class TorchIEKF(torch.nn.Module, NumPyIEKF):
         i,
         measurement_cov,
     ):
-        """Update state using zero velocity constraints (PyTorch version)."""
+        """Update state using zero lateral/vertical velocity constraints."""
         # Orientation of body frame
         Rot_body = Rot.mm(Rot_c_i)
 
@@ -478,7 +518,7 @@ class TorchIEKF(torch.nn.Module, NumPyIEKF):
     def state_and_cov_update_torch(
         Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i, P, H, r, R
     ):
-        """Perform Kalman update (PyTorch version)."""
+        """Kalman gain, state correction, and covariance update."""
         # Kalman gain
         S = H.mm(P).mm(H.t()) + R
         try:
@@ -510,7 +550,7 @@ class TorchIEKF(torch.nn.Module, NumPyIEKF):
         t_c_i_up = t_c_i + dx[18:21]
 
         # Update covariance (Joseph form)
-        I_KH = TorchIEKF.IdP - K.mm(H)
+        I_KH = torch.eye(K.shape[0], dtype=K.dtype, device=K.device) - K.mm(H)
         P_upprev = I_KH.mm(P).mm(I_KH.t()) + K.mm(R).mm(K.t())
         P_up = (P_upprev + P_upprev.t()) / 2
 
@@ -525,11 +565,13 @@ class TorchIEKF(torch.nn.Module, NumPyIEKF):
             P_up,
         )
 
-    # ========== PyTorch Geometry Utilities ==========
+    # ==================================================================
+    # Geometry utilities (all device-aware via input tensors)
+    # ==================================================================
 
     @staticmethod
     def skew_torch(x):
-        """Skew-symmetric matrix (PyTorch version)."""
+        """Skew-symmetric matrix from 3-vector."""
         zero = x.new_zeros(1).squeeze()
         return torch.stack(
             [
@@ -541,34 +583,32 @@ class TorchIEKF(torch.nn.Module, NumPyIEKF):
 
     @staticmethod
     def so3exp_torch(phi):
-        """SO(3) exponential map (PyTorch version)."""
+        """SO(3) exponential map."""
         angle = phi.norm()
+        Id3 = torch.eye(3, dtype=phi.dtype, device=phi.device)
 
-        if isclose(angle, torch.tensor(0.0)):
+        if isclose(angle, phi.new_tensor(0.0)):
             skew_phi = TorchIEKF.skew_torch(phi)
-            return TorchIEKF.Id3 + skew_phi
+            return Id3 + skew_phi
 
         axis = phi / angle
         skew_axis = TorchIEKF.skew_torch(axis)
         c = angle.cos()
         s = angle.sin()
 
-        return (
-            c * TorchIEKF.Id3
-            + (1 - c) * TorchIEKF.outer(axis, axis)
-            + s * skew_axis
-        )
+        return c * Id3 + (1 - c) * TorchIEKF.outer(axis, axis) + s * skew_axis
 
     @staticmethod
     def se23_exp_torch(xi):
-        """SE_2(3) exponential map (PyTorch version)."""
+        """SE_2(3) exponential map.  Returns (Rot, x) where x is 3x2."""
         phi = xi[:3]
         angle = torch.norm(phi)
+        Id3 = torch.eye(3, dtype=xi.dtype, device=xi.device)
 
-        if isclose(angle, torch.tensor(0.0)):
+        if isclose(angle, xi.new_tensor(0.0)):
             skew_phi = TorchIEKF.skew_torch(phi)
-            J = TorchIEKF.Id3 + 0.5 * skew_phi
-            Rot = TorchIEKF.Id3 + skew_phi
+            J = Id3 + 0.5 * skew_phi
+            Rot = Id3 + skew_phi
         else:
             axis = phi / angle
             skew_axis = TorchIEKF.skew_torch(axis)
@@ -576,14 +616,12 @@ class TorchIEKF(torch.nn.Module, NumPyIEKF):
             c = torch.cos(angle)
 
             J = (
-                (s / angle) * TorchIEKF.Id3
+                (s / angle) * Id3
                 + (1 - s / angle) * TorchIEKF.outer(axis, axis)
                 + ((1 - c) / angle) * skew_axis
             )
             Rot = (
-                c * TorchIEKF.Id3
-                + (1 - c) * TorchIEKF.outer(axis, axis)
-                + s * skew_axis
+                c * Id3 + (1 - c) * TorchIEKF.outer(axis, axis) + s * skew_axis
             )
 
         x = J.mm(xi[3:].view(-1, 3).t())
@@ -591,56 +629,82 @@ class TorchIEKF(torch.nn.Module, NumPyIEKF):
 
     @staticmethod
     def from_rpy_torch(roll, pitch, yaw):
-        """Convert RPY to rotation matrix (PyTorch version)."""
+        """Rotation matrix from roll-pitch-yaw (ZYX convention)."""
         return TorchIEKF.rotz_torch(yaw).mm(
             TorchIEKF.roty_torch(pitch).mm(TorchIEKF.rotx_torch(roll))
         )
 
     @staticmethod
     def rotx_torch(t):
-        """Rotation around x-axis (PyTorch version)."""
+        """Rotation around x-axis."""
         c = torch.cos(t)
         s = torch.sin(t)
-        return torch.Tensor([[1, 0, 0], [0, c, -s], [0, s, c]]).double()
+        zero = t.new_zeros(())
+        one = t.new_ones(())
+        return torch.stack(
+            [
+                torch.stack([one, zero, zero]),
+                torch.stack([zero, c, -s]),
+                torch.stack([zero, s, c]),
+            ]
+        )
 
     @staticmethod
     def roty_torch(t):
-        """Rotation around y-axis (PyTorch version)."""
+        """Rotation around y-axis."""
         c = torch.cos(t)
         s = torch.sin(t)
-        return torch.Tensor([[c, 0, s], [0, 1, 0], [-s, 0, c]]).double()
+        zero = t.new_zeros(())
+        one = t.new_ones(())
+        return torch.stack(
+            [
+                torch.stack([c, zero, s]),
+                torch.stack([zero, one, zero]),
+                torch.stack([-s, zero, c]),
+            ]
+        )
 
     @staticmethod
     def rotz_torch(t):
-        """Rotation around z-axis (PyTorch version)."""
+        """Rotation around z-axis."""
         c = torch.cos(t)
         s = torch.sin(t)
-        return torch.Tensor([[c, -s, 0], [s, c, 0], [0, 0, 1]]).double()
+        zero = t.new_zeros(())
+        one = t.new_ones(())
+        return torch.stack(
+            [
+                torch.stack([c, -s, zero]),
+                torch.stack([s, c, zero]),
+                torch.stack([zero, zero, one]),
+            ]
+        )
 
     @staticmethod
     def outer(a, b):
-        """Outer product (PyTorch version)."""
+        """Outer product."""
         return torch.ger(a, b)
 
     @staticmethod
     def normalize_rot_torch(Rot):
-        """Normalize rotation matrix using SVD (PyTorch version)."""
+        """Project a near-rotation matrix back onto SO(3) via SVD."""
         U, _, V = torch.svd(Rot)
-        S = torch.eye(3).double()
+        S = torch.eye(3, dtype=Rot.dtype, device=Rot.device)
         S[2, 2] = torch.det(U) * torch.det(V)
         return U.mm(S).mm(V.t())
 
-    # ========== Network Integration Methods (Phase 2) ==========
+    # ------------------------------------------------------------------
+    # Network integration
+    # ------------------------------------------------------------------
 
     def forward_nets(self, u):
         """
-        Forward pass through covariance prediction networks.
+        Predict measurement covariances from raw IMU data.
 
         Args:
-            u: IMU measurements (N, 6)
+            u: IMU measurements (N, 6).
 
         Returns:
-            Predicted measurement covariances (N, 2)
+            Measurement covariances (N, 2).
         """
         if self.mes_net is None:
             # Use default covariances if no network
@@ -653,26 +717,54 @@ class TorchIEKF(torch.nn.Module, NumPyIEKF):
 
     def set_Q(self):
         """
-        Update process noise covariance using learned scaling factors.
+        Rebuild Q, optionally using learned scaling factors.
 
-        If initprocesscov_net is available, uses its predictions.
-        Otherwise uses default covariances.
+        Called once per training step so the computation graph is fresh.
         """
-        # Build base Q
-        self._build_torch_Q()
+        # Reset to default values
+        q_vals = torch.tensor(
+            [
+                self.cov_omega,
+                self.cov_omega,
+                self.cov_omega,
+                self.cov_acc,
+                self.cov_acc,
+                self.cov_acc,
+                self.cov_b_omega,
+                self.cov_b_omega,
+                self.cov_b_omega,
+                self.cov_b_acc,
+                self.cov_b_acc,
+                self.cov_b_acc,
+                self.cov_Rot_c_i,
+                self.cov_Rot_c_i,
+                self.cov_Rot_c_i,
+                self.cov_t_c_i,
+                self.cov_t_c_i,
+                self.cov_t_c_i,
+            ],
+            dtype=torch.float64,
+            device=self.device,
+        )
+        self.Q.data.copy_(torch.diag(q_vals))
 
         if self.initprocesscov_net is None:
             return
 
-        # Apply learned scaling
+        # Apply learned scaling (create on same device as current Q buffer)
         beta = self.initprocesscov_net.init_processcov(self)
-        self.Q = torch.zeros(self.Q.shape[0], self.Q.shape[0]).double()
-        self.Q[:3, :3] = self.cov_omega * beta[0] * self.Id3
-        self.Q[3:6, 3:6] = self.cov_acc * beta[1] * self.Id3
-        self.Q[6:9, 6:9] = self.cov_b_omega * beta[2] * self.Id3
-        self.Q[9:12, 9:12] = self.cov_b_acc * beta[3] * self.Id3
-        self.Q[12:15, 12:15] = self.cov_Rot_c_i * beta[4] * self.Id3
-        self.Q[15:18, 15:18] = self.cov_t_c_i * beta[5] * self.Id3
+        Q_new = self.Q.new_zeros(self.Q.shape[0], self.Q.shape[0])
+        Q_new[:3, :3] = self.cov_omega * beta[0] * self.Id3
+        Q_new[3:6, 3:6] = self.cov_acc * beta[1] * self.Id3
+        Q_new[6:9, 6:9] = self.cov_b_omega * beta[2] * self.Id3
+        Q_new[9:12, 9:12] = self.cov_b_acc * beta[3] * self.Id3
+        Q_new[12:15, 12:15] = self.cov_Rot_c_i * beta[4] * self.Id3
+        Q_new[15:18, 15:18] = self.cov_t_c_i * beta[5] * self.Id3
+        self.Q.data.copy_(Q_new)
+
+    # ------------------------------------------------------------------
+    # Normalization
+    # ------------------------------------------------------------------
 
     def normalize_u(self, u):
         """Normalize IMU inputs using dataset statistics."""
@@ -681,13 +773,21 @@ class TorchIEKF(torch.nn.Module, NumPyIEKF):
         return (u - self.u_loc) / self.u_std
 
     def get_normalize_u(self, dataset):
-        """Load normalization parameters from dataset."""
-        self.u_loc = dataset.normalize_factors["u_loc"].double()
-        self.u_std = dataset.normalize_factors["u_std"].double()
+        """Load normalization parameters from dataset and move to model device."""
+        self.u_loc = (
+            dataset.normalize_factors["u_loc"].double().to(self.device)
+        )
+        self.u_std = (
+            dataset.normalize_factors["u_std"].double().to(self.device)
+        )
+
+    # ------------------------------------------------------------------
+    # Serialization
+    # ------------------------------------------------------------------
 
     def load(self, args, dataset):
         """
-        Load trained network weights.
+        Load trained network weights (legacy format).
 
         Args:
             args: Arguments containing path_temp
@@ -695,7 +795,7 @@ class TorchIEKF(torch.nn.Module, NumPyIEKF):
         """
         path_iekf = os.path.join(args.path_temp, "iekfnets.p")
         if os.path.isfile(path_iekf):
-            mondict = torch.load(path_iekf)
+            mondict = torch.load(path_iekf, map_location=self.device)
             self.load_state_dict(mondict)
             cprint("IEKF nets loaded", "green")
         else:

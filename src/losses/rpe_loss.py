@@ -46,8 +46,9 @@ class RPELoss(TrajectoryLoss):
 
         self.downsample_rate = cfg.get("downsample_rate", 10)
         self.step_size = cfg.get("step_size", 10)
-        self.distance_windows = cfg.get("distance_windows",
-            [100, 200, 300, 400, 500, 600, 700, 800])
+        self.distance_windows = cfg.get(
+            "distance_windows", [100, 200, 300, 400, 500, 600, 700, 800]
+        )
 
     def precompute(self, Rot_gt, p_gt):
         """
@@ -75,7 +76,7 @@ class RPELoss(TrajectoryLoss):
         # Compute cumulative distances
         distances = np.zeros(p.shape[0])
         dp = p[1:] - p[:-1]
-        distances[1:] = dp.norm(dim=1).cumsum(0).numpy()
+        distances[1:] = dp.norm(dim=1).cumsum(0).cpu().numpy()
 
         k_max = int(Rot.shape[0] / self.step_size) - 1
 
@@ -84,8 +85,9 @@ class RPELoss(TrajectoryLoss):
             for seq_length in self.distance_windows:
                 if seq_length + distances[idx_0] > distances[-1]:
                     continue
-                idx_shift = np.searchsorted(distances[idx_0:],
-                                            distances[idx_0] + seq_length)
+                idx_shift = np.searchsorted(
+                    distances[idx_0:], distances[idx_0] + seq_length
+                )
                 idx_end = idx_0 + idx_shift
 
                 list_rpe[0].append(idx_0)
@@ -100,8 +102,9 @@ class RPELoss(TrajectoryLoss):
 
         # Compute ground truth relative displacements in local frame
         diff = (p[idxs_end] - p[idxs_0]).to(Rot.dtype)
-        delta_p = Rot[idxs_0].transpose(-1, -2).matmul(
-            diff.unsqueeze(-1)).squeeze()
+        delta_p = (
+            Rot[idxs_0].transpose(-1, -2).matmul(diff.unsqueeze(-1)).squeeze()
+        )
         list_rpe[2] = delta_p
 
         return list_rpe
@@ -169,9 +172,16 @@ class RPELoss(TrajectoryLoss):
             return None, None
 
         # Compute predicted relative displacements in local frame
-        delta_p = Rot_ds[idxs_0].transpose(-1, -2).matmul(
-            (p_ds[idxs_end] - p_ds[idxs_0]).unsqueeze(-1)).squeeze()
+        delta_p = (
+            Rot_ds[idxs_0]
+            .transpose(-1, -2)
+            .matmul((p_ds[idxs_end] - p_ds[idxs_0]).unsqueeze(-1))
+            .squeeze()
+        )
 
         # Normalize by distance
         distance = delta_p_gt.norm(dim=1).unsqueeze(-1)
-        return delta_p.double() / distance.double(), delta_p_gt.double() / distance.double()
+        return (
+            delta_p.double() / distance.double(),
+            delta_p_gt.double() / distance.double(),
+        )

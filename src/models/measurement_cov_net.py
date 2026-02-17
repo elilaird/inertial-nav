@@ -40,15 +40,27 @@ class MeasurementCovNet(BaseCovarianceNet):
         weight_scale: Factor to scale initial linear layer weights (default: 0.01)
     """
 
-    def __init__(self, input_channels=6, output_dim=2, initial_beta=3.0,
-                 cnn_channels=32, kernel_size=5, dilation=3, dropout=0.5,
-                 bias_scale=0.01, weight_scale=0.01):
+    def __init__(
+        self,
+        input_channels=6,
+        output_dim=2,
+        initial_beta=3.0,
+        cnn_channels=32,
+        kernel_size=5,
+        dilation=3,
+        dropout=0.5,
+        bias_scale=0.01,
+        weight_scale=0.01,
+    ):
         super().__init__()
 
         self.output_dim = output_dim
 
-        # Beta scaling parameter (not learned)
-        self.beta_measurement = initial_beta * torch.ones(output_dim).double()
+        # Beta scaling parameter (not learned, registered as buffer for device tracking)
+        self.register_buffer(
+            "beta_measurement",
+            initial_beta * torch.ones(output_dim).double(),
+        )
 
         self.tanh = nn.Tanh()
 
@@ -58,7 +70,9 @@ class MeasurementCovNet(BaseCovarianceNet):
             nn.ReplicationPad1d(kernel_size - 1),
             nn.ReLU(),
             nn.Dropout(p=dropout),
-            nn.Conv1d(cnn_channels, cnn_channels, kernel_size, dilation=dilation),
+            nn.Conv1d(
+                cnn_channels, cnn_channels, kernel_size, dilation=dilation
+            ),
             nn.ReplicationPad1d(kernel_size - 1),
             nn.ReLU(),
             nn.Dropout(p=dropout),
@@ -95,7 +109,9 @@ class MeasurementCovNet(BaseCovarianceNet):
         z_cov_net = self.beta_measurement.unsqueeze(0) * z_cov
 
         # Scale baseline measurement covariance
-        measurements_covs = iekf.cov0_measurement.unsqueeze(0) * (10 ** z_cov_net)
+        measurements_covs = iekf.cov0_measurement.unsqueeze(0) * (
+            10**z_cov_net
+        )
 
         return measurements_covs
 

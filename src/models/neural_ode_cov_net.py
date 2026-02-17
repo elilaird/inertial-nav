@@ -70,9 +70,17 @@ class NeuralODEConvCovNet(BaseCovarianceNet):
         solver: ODE solver method (default: "euler")
     """
 
-    def __init__(self, input_channels=6, output_dim=2, hidden_dim=16,
-                 conv_channels=16, kernel_size=3, initial_beta=3.0,
-                 ode_steps=2, solver="euler"):
+    def __init__(
+        self,
+        input_channels=6,
+        output_dim=2,
+        hidden_dim=16,
+        conv_channels=16,
+        kernel_size=3,
+        initial_beta=3.0,
+        ode_steps=2,
+        solver="euler",
+    ):
         super().__init__()
 
         self.output_dim = output_dim
@@ -80,12 +88,19 @@ class NeuralODEConvCovNet(BaseCovarianceNet):
         self.ode_steps = ode_steps
         self.solver = solver
 
-        self.beta_measurement = initial_beta * torch.ones(output_dim).double()
+        self.register_buffer(
+            "beta_measurement",
+            initial_beta * torch.ones(output_dim).double(),
+        )
 
         # Lightweight conv feature extractor
         self.feature_net = nn.Sequential(
-            nn.Conv1d(input_channels, conv_channels, kernel_size,
-                      padding=kernel_size // 2),
+            nn.Conv1d(
+                input_channels,
+                conv_channels,
+                kernel_size,
+                padding=kernel_size // 2,
+            ),
             nn.ReLU(),
         ).double()
 
@@ -124,7 +139,9 @@ class NeuralODEConvCovNet(BaseCovarianceNet):
         h = self.to_ode(h)  # (seq_len, hidden_dim)
 
         # Run Neural ODE on each timestep's features
-        t_span = torch.linspace(0, 1, self.ode_steps).double()
+        t_span = torch.linspace(
+            0, 1, self.ode_steps, dtype=torch.float64, device=h.device
+        )
         h_evolved = odeint(self.ode_func, h, t_span, method=self.solver)
         h_out = h_evolved[-1]  # Take final state: (seq_len, hidden_dim)
 
@@ -133,7 +150,9 @@ class NeuralODEConvCovNet(BaseCovarianceNet):
 
         # Apply beta scaling and baseline covariance
         z_cov_net = self.beta_measurement.unsqueeze(0) * z_cov
-        measurements_covs = iekf.cov0_measurement.unsqueeze(0) * (10 ** z_cov_net)
+        measurements_covs = iekf.cov0_measurement.unsqueeze(0) * (
+            10**z_cov_net
+        )
 
         return measurements_covs
 
@@ -163,8 +182,16 @@ class NeuralODELSTMCovNet(BaseCovarianceNet):
         solver: ODE solver method (default: "euler")
     """
 
-    def __init__(self, input_channels=6, output_dim=2, hidden_dim=16,
-                 lstm_hidden=16, initial_beta=3.0, ode_steps=2, solver="euler"):
+    def __init__(
+        self,
+        input_channels=6,
+        output_dim=2,
+        hidden_dim=16,
+        lstm_hidden=16,
+        initial_beta=3.0,
+        ode_steps=2,
+        solver="euler",
+    ):
         super().__init__()
 
         self.output_dim = output_dim
@@ -172,7 +199,10 @@ class NeuralODELSTMCovNet(BaseCovarianceNet):
         self.ode_steps = ode_steps
         self.solver = solver
 
-        self.beta_measurement = initial_beta * torch.ones(output_dim).double()
+        self.register_buffer(
+            "beta_measurement",
+            initial_beta * torch.ones(output_dim).double(),
+        )
 
         # Lightweight LSTM feature extractor
         self.lstm = nn.LSTM(
@@ -219,7 +249,9 @@ class NeuralODELSTMCovNet(BaseCovarianceNet):
         h = self.to_ode(lstm_out.squeeze(0))
 
         # Run Neural ODE
-        t_span = torch.linspace(0, 1, self.ode_steps).double()
+        t_span = torch.linspace(
+            0, 1, self.ode_steps, dtype=torch.float64, device=h.device
+        )
         h_evolved = odeint(self.ode_func, h, t_span, method=self.solver)
         h_out = h_evolved[-1]  # (seq_len, hidden_dim)
 
@@ -228,7 +260,9 @@ class NeuralODELSTMCovNet(BaseCovarianceNet):
 
         # Apply beta scaling and baseline covariance
         z_cov_net = self.beta_measurement.unsqueeze(0) * z_cov
-        measurements_covs = iekf.cov0_measurement.unsqueeze(0) * (10 ** z_cov_net)
+        measurements_covs = iekf.cov0_measurement.unsqueeze(0) * (
+            10**z_cov_net
+        )
 
         return measurements_covs
 

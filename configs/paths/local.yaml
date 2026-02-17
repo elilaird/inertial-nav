@@ -2,19 +2,19 @@
 
 # KITTI raw dataset base directory
 # Update this to point to your KITTI raw data location
-data: /Users/eli/Projects/inertial-nav/data
+data: /lustre/smuexa01/client/users/ejlaird/data/kitti
 
 # Processed data storage (pickle files)
-data_save: "/Users/eli/Projects/inertial-nav/data"
+data_save: "/lustre/smuexa01/client/users/ejlaird/kitti"
 
 # Test results output directory
-results: "/Users/eli/Projects/inertial-nav/results_test"
+results: "/lustre/smuexa01/client/users/ejlaird/inertial_nav/results"
 
 # Temporary files and checkpoints during training
-temp: "/Users/eli/Projects/inertial-nav/temp"
+temp: "/lustre/smuexa01/client/users/ejlaird/inertial_nav/temp"
 
 # Model checkpoints
-checkpoints: "checkpoints"
+checkpoints: "/lustre/smuexa01/client/users/ejlaird/inertial_nav/checkpoints"
 
 # WandB artifacts and logs
-wandb: "wandb"
+wandb: "/lustre/smuexa01/client/users/ejlaird/inertial_nav/wandb"

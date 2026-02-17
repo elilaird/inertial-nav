@@ -10,27 +10,26 @@ AI-IMU Dead-Reckoning system implementing accurate vehicle localization using on
 
 The system consists of two main blocks:
 
-1. **IEKF Filter Block** (`utils_numpy_filter.py`)
+1. **IEKF Filter Block** (`src/core/torch_iekf.py`)
    - Integrates inertial measurements (gyroscope and accelerometer)
    - Exploits zero lateral and vertical velocity constraints
    - Estimates 3D position, velocity, orientation, and IMU biases
-   - NumPy-based implementation for runtime inference
+   - Pure PyTorch implementation with CUDA support
 
-2. **Neural Network Adapter Block** (`utils_torch_filter.py`)
+2. **Neural Network Adapter Block** (`src/models/`)
    - `InitProcessCovNet`: Learns initial state and process noise covariances
-   - `MesNet`: CNN that converts raw IMU signals into measurement covariance matrices
-   - PyTorch-based for training and forward pass during testing
+   - `MeasurementCovNet`: CNN that converts raw IMU signals into measurement covariance matrices
+   - PyTorch-based for training and inference
    - No knowledge of state estimates required - operates directly on IMU signals
 
-The dual implementation approach (NumPy + PyTorch) allows the trained neural networks to predict covariances which are then used by the fast NumPy filter during testing.
+The neural networks predict covariances which are used by the IEKF filter during both training and testing.
 
 ## Key Files
 
 - `main_kitti.py` - Main entry point defining the KITTI dataset class, parameters, and workflow control
 - `dataset.py` - Base dataset class handling data loading, normalization, and noise injection
-- `utils_torch_filter.py` - PyTorch IEKF with neural network components (training & inference)
-- `utils_numpy_filter.py` - Pure NumPy IEKF implementation (fast inference)
-- `train_torch_filter.py` - Training loop using relative pose error (RPE) loss
+- `utils_torch_filter.py` - PyTorch IEKF with neural network components (training & inference, legacy)
+- `train_torch_filter.py` - Training loop using relative pose error (RPE) loss (legacy)
 - `utils_plot.py` - Results visualization and error metrics
 - `utils.py` - Data preparation and Umeyama alignment utilities
 
@@ -69,7 +68,7 @@ Modify the loop in `test_filter()` function (line 431 in `main_kitti.py`) to fil
 1. **Input**: KITTI raw IMU data (gyro, accelerometer) + ground truth poses
 2. **Preprocessing**: Convert to pickle format, normalize IMU signals, compute ground truth relative poses
 3. **Training**: Neural networks learn to predict measurement covariances by minimizing RPE loss
-4. **Testing**: Neural nets predict covariances → NumPy IEKF runs filter → Results saved to `results/`
+4. **Testing**: Neural nets predict covariances → TorchIEKF runs filter (with `torch.no_grad()`) → Results saved to `results/`
 5. **Visualization**: Plot trajectories, compute error metrics (RPE, ATE)
 
 ## Important Dataset Details
