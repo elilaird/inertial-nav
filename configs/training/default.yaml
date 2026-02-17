@@ -15,6 +15,15 @@ batch_size: 9
 # null = auto: ceil(n_train_sequences / batch_size), matching legacy total-sequence count.
 steps_per_epoch: null
 
+# Truncated Backpropagation Through Time (TBPTT)
+# When enabled, each sequence is divided into non-overlapping chunks.
+# An optimizer step is taken after each chunk; filter state is detached
+# at chunk boundaries to limit gradient graph depth.
+# Set enabled: false to use the standard (full-sequence) mode.
+bptt:
+    enabled: false
+    chunk_size: 500 # timesteps per chunk (500 = 5 s at 100 Hz)
+
 # Gradient clipping
 gradient_clipping:
     enabled: true
