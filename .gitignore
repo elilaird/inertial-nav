@@ -1,4 +1,5 @@
 data/
+*.p
 *.pyc
 __pycache__/
 *.egg-info/
