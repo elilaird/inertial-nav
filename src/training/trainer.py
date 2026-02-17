@@ -62,6 +62,11 @@ class Trainer:
         self.max_loss = self.training_cfg.get("max_loss")
         self.seed = self.training_cfg.get("seed")
 
+        # BPTT config
+        bptt_cfg = self.training_cfg.get("bptt", {})
+        self.use_bptt = bptt_cfg.get("enabled", False)
+        self.bptt_chunk_size = bptt_cfg.get("chunk_size", 500)
+
         # Gradient clipping
         gc_cfg = self.training_cfg.get("gradient_clipping")
         self.clip_gradients = gc_cfg.get("enabled")
@@ -195,6 +200,12 @@ class Trainer:
         return epoch_metrics
 
     def train_epoch(self, epoch):
+        """Route to BPTT or standard training for one epoch."""
+        if self.use_bptt:
+            return self._train_epoch_bptt(epoch)
+        return self._train_epoch_standard(epoch)
+
+    def _train_epoch_standard(self, epoch):
         """
         Train one epoch matching the paper's sampling strategy.
 
@@ -326,6 +337,207 @@ class Trainer:
             metrics[f"train/lr_group{i}"] = pg["lr"]
 
         return metrics
+
+    # ------------------------------------------------------------------ #
+    # Truncated BPTT training                                              #
+    # ------------------------------------------------------------------ #
+
+    def _train_epoch_bptt(self, epoch):
+        """
+        TBPTT training epoch: each sequence is split into non-overlapping
+        chunks of ``bptt_chunk_size`` timesteps.  An optimizer step is taken
+        after each chunk and the filter state is detached before the next.
+
+        The same paper-faithful sampling is applied (``batch_size`` sequences
+        with replacement per epoch step), and each sequence generates
+        ``ceil(seq_dim / chunk_size)`` optimizer steps instead of 1.
+
+        Returns:
+            Dict of epoch metrics (same keys as standard mode).
+        """
+        self.model.train()
+
+        train_filter = self.dataset.datasets_train_filter
+        seq_names = list(train_filter.keys())
+        n_train = len(seq_names)
+
+        steps = self.steps_per_epoch
+        if steps is None:
+            import math
+
+            steps = max(1, math.ceil(n_train / self.batch_size))
+        if self.fast_dev_run:
+            steps = 1
+
+        rng = np.random.default_rng(self.seed + epoch)
+
+        epoch_loss = 0.0
+        n_optimizer_steps = 0
+        n_sequences = 0
+        n_skipped = 0
+        grad_norms = []
+
+        for step in range(steps):
+            sampled = rng.choice(seq_names, size=self.batch_size, replace=True)
+
+            for j, dataset_name in enumerate(sampled):
+                Ns = train_filter[dataset_name]
+                seq_loss, seq_steps, seq_gnorms, seq_skipped = (
+                    self._train_step_bptt(dataset_name, Ns)
+                )
+
+                if seq_steps == 0:
+                    n_skipped += 1
+                    continue
+
+                epoch_loss += seq_loss
+                n_optimizer_steps += seq_steps
+                n_sequences += 1
+                n_skipped += seq_skipped
+                grad_norms.extend(seq_gnorms)
+
+            if self.fast_dev_run:
+                break
+
+        if n_sequences == 0:
+            return {
+                "train/loss_epoch": float("nan"),
+                "train/sequences_skipped": n_skipped,
+            }
+
+        avg_grad_norm = float(np.mean(grad_norms)) if grad_norms else 0.0
+        metrics = {
+            "train/loss_epoch": epoch_loss / max(n_optimizer_steps, 1),
+            "train/grad_norm": avg_grad_norm,
+            "train/sequences_skipped": n_skipped,
+            "train/n_sequences": n_sequences,
+            "train/n_optimizer_steps": n_optimizer_steps,
+            "train/bptt_chunk_size": self.bptt_chunk_size,
+        }
+        for i, pg in enumerate(self.optimizer.param_groups):
+            metrics[f"train/lr_group{i}"] = pg["lr"]
+        return metrics
+
+    def _train_step_bptt(self, dataset_name, Ns):
+        """
+        Run one sequence with Truncated BPTT.
+
+        The sequence is divided into non-overlapping chunks of
+        ``self.bptt_chunk_size`` timesteps.  For each chunk:
+
+        1. ``set_Q()`` rebuilds the learned process-noise graph.
+        2. ``forward_nets`` runs the measurement-cov CNN on the chunk's IMU.
+        3. ``run_chunk`` propagates the filter for ``chunk_size`` timesteps.
+        4. RPE loss is computed for pairs fully within this chunk.
+        5. ``backward()`` + ``optimizer.step()`` are called.
+        6. The filter state is *detached* before the next chunk (the BPTT cut).
+
+        Args:
+            dataset_name: Training sequence name.
+            Ns:           [start_idx, end_idx] frame range.
+
+        Returns:
+            Tuple (total_loss_float, n_valid_chunks, grad_norm_list, n_skipped_chunks).
+        """
+        from src.core.torch_iekf import TorchIEKF
+
+        # Load + slice (same as _train_step)
+        t, ang_gt, p_gt, v_gt, u = self.dataset.get_data(dataset_name)
+        t = t[Ns[0] : Ns[1]]
+        ang_gt = ang_gt[Ns[0] : Ns[1]]
+        p_gt = p_gt[Ns[0] : Ns[1]] - p_gt[Ns[0]]
+        v_gt = v_gt[Ns[0] : Ns[1]]
+        u = u[Ns[0] : Ns[1]]
+
+        N0, N_end = self._get_start_and_end(self.seq_dim, u)
+        t = t[N0:N_end].double()
+        ang_gt = ang_gt[N0:N_end].double()
+        p_gt = (p_gt[N0:N_end] - p_gt[N0]).double()
+        v_gt = v_gt[N0:N_end].double()
+        u = self.dataset.add_noise(u[N0:N_end].double())
+        N = t.shape[0]
+
+        list_rpe = self.dataset.list_rpe.get(dataset_name)
+        if list_rpe is None:
+            return 0.0, 0, [], 1
+
+        # Initialise filter state (outside any chunk graph)
+        self.model.set_Q()
+        state = self.model.init_state(t, u, v_gt, ang_gt[0])
+        state = TorchIEKF.detach_state(state)
+
+        total_loss = 0.0
+        n_valid = 0
+        n_skipped = 0
+        gnorms = []
+        chunk_size = self.bptt_chunk_size
+
+        for ci, cs in enumerate(range(0, N, chunk_size)):
+            ce = min(cs + chunk_size, N)
+            if ce - cs < 2:
+                break
+
+            # Fresh graph for this chunk
+            self.model.set_Q()
+
+            # CNN runs on chunk only — gradient stays within this backward call
+            meas_c = self.model.forward_nets(u[cs:ce])
+
+            # Filter forward for chunk_size timesteps
+            traj, new_state = self.model.run_chunk(
+                state, t[cs:ce], u[cs:ce], meas_c
+            )
+            Rot_c, _, p_c, *_ = traj
+
+            # RPE loss: pass N0 offset so index math maps into p_c correctly
+            loss = self.loss_fn(
+                Rot_c,
+                p_c,
+                None,
+                None,
+                list_rpe=list_rpe,
+                N0=N0 + cs,
+            )
+
+            is_invalid = loss == -1 or (
+                isinstance(loss, torch.Tensor) and torch.isnan(loss)
+            )
+            is_too_high = (
+                self.max_loss is not None
+                and isinstance(loss, torch.Tensor)
+                and loss.item() > self.max_loss
+            )
+
+            if is_invalid or is_too_high:
+                n_skipped += 1
+                state = TorchIEKF.detach_state(new_state)
+                continue
+
+            loss.backward()
+            g_norm = torch.nn.utils.clip_grad_norm_(
+                self.model.parameters(), self.max_grad_norm
+            )
+
+            if np.isnan(g_norm) or g_norm > 3 * self.max_grad_norm:
+                cprint(
+                    f"  [bptt chunk {ci}] grad norm too large: {g_norm:.4f}",
+                    "yellow",
+                )
+                self.optimizer.zero_grad()
+            else:
+                self.optimizer.step()
+                self.optimizer.zero_grad()
+                n_valid += 1
+                total_loss += loss.item()
+                gnorms.append(float(g_norm))
+
+            # ---- BPTT cut: detach state before next chunk ----
+            state = TorchIEKF.detach_state(new_state)
+
+            if self.fast_dev_run:
+                break
+
+        return total_loss, n_valid, gnorms, n_skipped
 
     def _train_step(self, dataset_name, Ns):
         """
