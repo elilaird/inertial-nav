@@ -1,0 +1,51 @@
+# KITTI Dataset Configuration
+
+name: "kitti"
+
+# Minimum sequence length (in samples at 100Hz)
+min_seq_dim: 2500  # 25 seconds
+
+# Sequences to exclude (known problematic data)
+datasets_fake:
+  - "2011_09_26_drive_0093_extract"
+  - "2011_09_28_drive_0039_extract"
+  - "2011_09_28_drive_0002_extract"
+
+# Training sequences with frame ranges [start, end]
+# None means use all available frames
+train_sequences:
+  "2011_10_03_drive_0042_extract": [0, null]
+  "2011_09_30_drive_0018_extract": [0, 15000]
+  "2011_09_30_drive_0020_extract": [0, null]
+  "2011_09_30_drive_0027_extract": [0, null]
+  "2011_09_30_drive_0033_extract": [0, null]
+  "2011_10_03_drive_0027_extract": [0, 18000]
+  "2011_10_03_drive_0034_extract": [0, 31000]
+  "2011_09_30_drive_0034_extract": [0, null]
+
+# Validation sequences
+val_sequences:
+  "2011_09_30_drive_0028_extract": [11231, 53650]
+
+# Test sequences (KITTI odometry benchmark sequence 02)
+test_sequences:
+  "2011_09_30_drive_0028_extract": [11231, 53650]
+
+# Data preprocessing
+preprocessing:
+  # Sampling rate (Hz)
+  sampling_rate: 100
+
+  # IMU noise injection during training
+  noise:
+    sigma_gyro: 0.0001
+    sigma_acc: 0.001
+    sigma_b_gyro: 0.00001
+    sigma_b_acc: 0.0001
+
+  # Normalize IMU inputs
+  normalize: true
+
+# Coordinate frame
+# KITTI uses East-North-Up (ENU) for ground truth poses
+coordinate_frame: "ENU"

@@ -1,4 +1,3 @@
-data/
 *.p
 *.pyc
 __pycache__/
@@ -9,7 +8,9 @@ build/
 wandb/
 outputs/
 checkpoints/
+results/
 *.pt
 *.pth
 .DS_Store
 .worktrees/
+.venv

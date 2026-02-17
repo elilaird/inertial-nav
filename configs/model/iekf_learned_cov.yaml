@@ -1,0 +1,99 @@
+# IEKF with Learned Covariances Model Configuration
+
+name: "iekf_learned_cov"
+
+# State dimensions
+state_dim:
+  rotation: 9  # 3x3 rotation matrix
+  velocity: 3
+  position: 3
+  bias_gyro: 3
+  bias_acc: 3
+  rotation_c_i: 9  # car to IMU rotation
+  translation_c_i: 3
+  total: 33  # Total state dimension
+
+# Covariance dimension (manifold tangent space)
+P_dim: 21
+
+# Physics parameters
+physics:
+  # Gravity vector [x, y, z] in m/s^2
+  gravity: [0.0, 0.0, -9.80655]
+
+  # Process noise covariances
+  process_noise:
+    cov_omega: 2.0e-4      # Gyroscope noise
+    cov_acc: 1.0e-3        # Accelerometer noise
+    cov_b_omega: 1.0e-8    # Gyroscope bias random walk
+    cov_b_acc: 1.0e-6      # Accelerometer bias random walk
+    cov_Rot_c_i: 1.0e-8    # Car-to-IMU rotation noise
+    cov_t_c_i: 1.0e-8      # Car-to-IMU translation noise
+
+  # Initial state covariances
+  initial_covariance:
+    cov_Rot0: 1.0e-6       # Initial rotation uncertainty
+    cov_v0: 1.0e-1         # Initial velocity uncertainty
+    cov_b_omega0: 1.0e-8   # Initial gyro bias uncertainty
+    cov_b_acc0: 1.0e-3     # Initial acc bias uncertainty
+    cov_Rot_c_i0: 1.0e-5   # Initial car-to-IMU rotation uncertainty
+    cov_t_c_i0: 1.0e-2     # Initial car-to-IMU translation uncertainty
+
+  # Measurement noise covariances (zero velocity constraints)
+  measurement_noise:
+    cov_lat: 1.0           # Lateral velocity constraint
+    cov_up: 10.0           # Vertical velocity constraint
+
+# Neural network components
+networks:
+  # InitProcessCovNet: learns initial and process noise covariances
+  init_process_cov:
+    enabled: true
+    architecture:
+      output_dim: 6  # [Rot, v, b_omega, b_acc, Rot_c_i, t_c_i]
+      initial_beta: 3.0  # Initial value for beta parameters
+      hidden_features: 1
+      activation: "tanh"
+    initialization:
+      weight_scale: 0.1  # Divide initial weights by 10
+
+  # MeasurementCovNet (MesNet): CNN that predicts measurement covariances
+  measurement_cov:
+    enabled: true
+    architecture:
+      input_channels: 6  # [gyro_x, gyro_y, gyro_z, acc_x, acc_y, acc_z]
+      output_dim: 2  # [lateral, vertical] velocity constraints
+      initial_beta: 3.0
+
+      # CNN layers
+      cov_net:
+        - type: "Conv1d"
+          in_channels: 6
+          out_channels: 32
+          kernel_size: 5
+        - type: "ReplicationPad1d"
+          padding: 4
+        - type: "ReLU"
+        - type: "Dropout"
+          p: 0.5
+        - type: "Conv1d"
+          in_channels: 32
+          out_channels: 32
+          kernel_size: 5
+          dilation: 3
+        - type: "ReplicationPad1d"
+          padding: 4
+        - type: "ReLU"
+        - type: "Dropout"
+          p: 0.5
+
+      # Linear layers
+      cov_lin:
+        - type: "Linear"
+          in_features: 32
+          out_features: 2
+        - type: "Tanh"
+
+    initialization:
+      bias_scale: 0.01  # Divide bias by 100
+      weight_scale: 0.01  # Divide weights by 100
