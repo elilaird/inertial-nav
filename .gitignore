@@ -1,0 +1,16 @@
+*.p
+*.pyc
+__pycache__/
+*.egg-info/
+dist/
+build/
+.eggs/
+wandb/
+outputs/
+checkpoints/
+results/
+*.pt
+*.pth
+.DS_Store
+.worktrees/
+.venv

@@ -1,0 +1,30 @@
+# IEKF with Neural ODE + Conv backbone for measurement covariance
+# Lightweight alternative to default CNN-based MesNet (~3.5K params)
+
+name: "iekf_node_conv_cov"
+
+# Inherit physics parameters from default
+_target_: configs.model.iekf_learned_cov
+
+# Override network configuration
+networks:
+  init_process_cov:
+    enabled: true
+    type: "InitProcessCovNet"
+    architecture:
+      output_dim: 6
+      initial_beta: 3.0
+      weight_scale: 10.0
+
+  measurement_cov:
+    enabled: true
+    type: "NeuralODEConvCovNet"
+    architecture:
+      input_channels: 6
+      output_dim: 2
+      hidden_dim: 16
+      conv_channels: 16
+      kernel_size: 3
+      initial_beta: 3.0
+      ode_steps: 2
+      solver: "euler"

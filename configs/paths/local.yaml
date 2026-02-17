@@ -1,0 +1,20 @@
+# Path configuration for local development
+
+# KITTI raw dataset base directory
+# Update this to point to your KITTI raw data location
+data: /Users/eli/Projects/inertial-nav/data
+
+# Processed data storage (pickle files)
+data_save: "/Users/eli/Projects/inertial-nav/data"
+
+# Test results output directory
+results: "/Users/eli/Projects/inertial-nav/results_test"
+
+# Temporary files and checkpoints during training
+temp: "/Users/eli/Projects/inertial-nav/temp"
+
+# Model checkpoints
+checkpoints: "checkpoints"
+
+# WandB artifacts and logs
+wandb: "wandb"

@@ -1,0 +1,55 @@
+# Default Training Configuration
+
+# Training epochs
+epochs: 400
+max_loss: 2e1
+# Sequence length for training (in samples at 100 Hz)
+# 6000 samples = 60 seconds
+seq_dim: 6000
+
+# Batch size: number of sequences sampled WITH REPLACEMENT per optimizer step.
+# The paper uses 9 (one step per epoch covers ~same compute as legacy 8-sequence loop).
+batch_size: 9
+
+# Steps per epoch: how many optimizer steps to take per epoch.
+# null = auto: ceil(n_train_sequences / batch_size), matching legacy total-sequence count.
+steps_per_epoch: null
+
+# Gradient clipping
+gradient_clipping:
+    enabled: true
+    max_norm: 1.0
+
+# Validation
+validation:
+    enabled: true
+    interval: 1 # Validate every N epochs
+    save_best: true # Save checkpoint when validation improves
+
+# Checkpointing
+checkpointing:
+    enabled: true
+    save_interval: 1 # Save checkpoint every N epochs
+    keep_last_n: 5 # Keep only last N checkpoints
+    save_best: true # Always keep best checkpoint
+
+# Resume from checkpoint
+resume:
+    enabled: false
+    checkpoint_path: null
+    reset_optimizer: false # If true, create new optimizer instead of loading
+
+# Debug mode
+debug:
+    fast_dev_run: false # Run 1 batch per epoch for testing
+    overfit_batches: 0 # If > 0, overfit on N batches
+    log_frequency: 10 # Log every N batches
+
+# Random seed for reproducibility
+seed: 42
+
+# Device
+device: "cuda" # "cuda" or "cpu", will auto-fallback to cpu if cuda unavailable
+
+# Mixed precision training
+use_amp: false # Automatic Mixed Precision (experimental)

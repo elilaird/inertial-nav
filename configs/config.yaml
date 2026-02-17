@@ -1,0 +1,68 @@
+# Main Hydra Configuration
+# This is the entry point for all configurations
+
+defaults:
+    - dataset: kitti
+    - model: iekf_learned_cov
+    - training: default
+    - optimizer: adam
+    - loss: rpe
+    - paths: local
+    - _self_
+
+# Experiment configuration
+experiment:
+    name: "ai-imu-dr" # Base experiment name
+    tags: [] # Tags for organizing runs
+    notes: "" # Experiment description
+    group: null # Group name for related runs
+
+# Logging configuration
+logging:
+    # WandB integration
+    use_wandb: true
+    wandb:
+        project: "ai-imu-dr"
+        entity: null # Your WandB username/team
+        mode: "online" # "online", "offline", or "disabled"
+        save_code: false
+        log_model: true # Log model checkpoints as WandB artifacts
+        log_freq:
+            batch: 10 # Log batch metrics every N batches
+            epoch: 1 # Log epoch metrics every N epochs
+            gradient: 100 # Log gradients every N batches
+
+    # Console logging
+    console:
+        level: "INFO" # DEBUG, INFO, WARNING, ERROR
+        use_colors: true
+
+    # File logging
+    file:
+        enabled: true
+        level: "DEBUG"
+
+# Hydra configuration
+hydra:
+    run:
+        dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    sweep:
+        dir: multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
+        subdir: ${hydra.job.num}
+    job:
+        chdir: false # Change to output directory
+
+# Mode flags (for backward compatibility with original code)
+mode:
+    read_data: false # Preprocess KITTI raw data to pickle format
+    train_filter: false # Train the filter
+    test_filter: true # Test the filter on sequences
+    results_filter: true # Visualize and save results
+
+checkpoint: null # Path to model checkpoint for testing (e.g. checkpoints/best.pth)
+
+
+# Override from command line with:
+# python train.py dataset=kitti model=iekf_learned_cov training.epochs=100
+# python train.py mode.train_filter=true
+# python test.py checkpoint=checkpoints/best.pth

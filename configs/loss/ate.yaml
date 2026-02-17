@@ -1,0 +1,4 @@
+# Absolute Trajectory Error loss
+type: "ATELoss"
+align: false
+reduction: "mean"

@@ -1,0 +1,28 @@
+# Adam Optimizer Configuration
+
+type: "Adam"
+
+# Parameter groups with different learning rates
+param_groups:
+  init_process_cov_net:
+    lr: 1.0e-4
+    weight_decay: 0.0
+
+  measurement_cov_net:
+    # Separate learning rates for different components
+    cov_net:
+      lr: 1.0e-4
+      weight_decay: 1.0e-8
+    cov_lin:
+      lr: 1.0e-4
+      weight_decay: 1.0e-8
+
+# Learning rate scheduling
+scheduler:
+  enabled: false
+  type: "ReduceLROnPlateau"
+  mode: "min"
+  factor: 0.5
+  patience: 10
+  min_lr: 1.0e-5
+  verbose: true

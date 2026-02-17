@@ -1,0 +1,38 @@
+# IEKF with learned Neural ODE dynamics + learned measurement covariance
+# Replaces classical inertial kinematics with learned v/p dynamics
+
+name: "iekf_learned_dynamics"
+
+# Inherit physics parameters from default
+_target_: configs.model.iekf_learned_cov
+
+# Override network configuration
+networks:
+  init_process_cov:
+    enabled: true
+    type: "InitProcessCovNet"
+    architecture:
+      output_dim: 6
+      initial_beta: 3.0
+      weight_scale: 10.0
+
+  measurement_cov:
+    enabled: true
+    type: "MeasurementCovNet"
+    architecture:
+      input_channels: 6
+      output_dim: 2
+      cnn_channels: [32, 32]
+      kernel_size: 5
+      dilation: [1, 3]
+      dropout: 0.5
+      initial_beta: 3.0
+
+  dynamics:
+    enabled: true
+    type: "NeuralODEDynamics"
+    architecture:
+      imu_dim: 6
+      hidden_dim: 32
+      solver: "euler"
+      use_classical_residual: true
