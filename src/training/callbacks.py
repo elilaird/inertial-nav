@@ -72,14 +72,20 @@ class CheckpointCallback(Callback):
         monitor: Metric name to monitor for best model (default: "train/loss_epoch").
     """
 
-    def __init__(self, save_dir, save_interval=1, keep_last_n=5,
-                 save_best=True, monitor="train/loss_epoch"):
+    def __init__(
+        self,
+        save_dir,
+        save_interval=1,
+        keep_last_n=5,
+        save_best=True,
+        monitor="train/loss_epoch",
+    ):
         self.save_dir = save_dir
         self.save_interval = save_interval
         self.keep_last_n = keep_last_n
         self.save_best = save_best
         self.monitor = monitor
-        self.best_metric = float('inf')
+        self.best_metric = float("inf")
         self.saved_checkpoints = []
 
     def on_train_start(self, trainer):
@@ -106,28 +112,31 @@ class CheckpointCallback(Callback):
                 self.best_metric = current
                 path = os.path.join(self.save_dir, "best.pth")
                 self._save_checkpoint(trainer, path, epoch, metrics)
-                cprint(f"New best model (epoch {epoch}, "
-                       f"{self.monitor}={current:.6f})", 'green')
+                cprint(
+                    f"New best model (epoch {epoch}, "
+                    f"{self.monitor}={current:.6f})",
+                    "green",
+                )
 
     @staticmethod
     def _save_checkpoint(trainer, path, epoch, metrics):
         checkpoint = {
-            'epoch': epoch,
-            'model_state_dict': trainer.model.state_dict(),
-            'metrics': metrics,
+            "epoch": epoch,
+            "model_state_dict": trainer.model.state_dict(),
+            "metrics": metrics,
         }
         if trainer.optimizer is not None:
-            checkpoint['optimizer_state_dict'] = trainer.optimizer.state_dict()
+            checkpoint["optimizer_state_dict"] = trainer.optimizer.state_dict()
         torch.save(checkpoint, path)
 
     @staticmethod
     def load_checkpoint(path, model, optimizer=None):
         """Load a checkpoint into model and optionally optimizer."""
-        checkpoint = torch.load(path, map_location='cpu')
-        model.load_state_dict(checkpoint['model_state_dict'])
-        if optimizer is not None and 'optimizer_state_dict' in checkpoint:
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        return checkpoint.get('epoch', 0), checkpoint.get('metrics', {})
+        checkpoint = torch.load(path, map_location="cpu")
+        model.load_state_dict(checkpoint["model_state_dict"])
+        if optimizer is not None and "optimizer_state_dict" in checkpoint:
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        return checkpoint.get("epoch", 0), checkpoint.get("metrics", {})
 
 
 class WandBLogger(Callback):
@@ -150,34 +159,38 @@ class WandBLogger(Callback):
         try:
             import wandb
         except ImportError:
-            cprint("wandb not installed, skipping WandB logging", 'yellow')
+            cprint("wandb not installed, skipping WandB logging", "yellow")
             return
 
+        SLURM_JOB_ID = os.environ.get("SLURM_JOB_ID", "local")
         self.run = wandb.init(
             project=self.cfg.get("project", "ai-imu-dr"),
             entity=self.cfg.get("entity", None),
-            name=trainer.experiment_name,
+            name=f"{trainer.experiment_name}_{SLURM_JOB_ID}",
             config=trainer.flat_config,
             mode=self.cfg.get("mode", "online"),
-            save_code=self.cfg.get("save_code", True),
+            save_code=self.cfg.get("save_code", False),
             tags=trainer.tags,
         )
 
         if self.model is not None:
-            wandb.watch(self.model, log='all',
-                        log_freq=self._gradient_log_freq)
+            wandb.watch(
+                self.model, log="all", log_freq=self._gradient_log_freq
+            )
 
     def on_train_end(self, trainer):
         if self.run is not None:
             import wandb
+
             wandb.finish()
 
     def on_epoch_end(self, trainer, epoch, metrics):
         if self.run is None:
             return
         import wandb
+
         log_dict = {k: v for k, v in metrics.items()}
-        log_dict['epoch'] = epoch
+        log_dict["epoch"] = epoch
         wandb.log(log_dict, step=epoch)
 
     def on_batch_end(self, trainer, epoch, batch_idx, metrics):
@@ -186,6 +199,7 @@ class WandBLogger(Callback):
         if batch_idx % self._batch_log_freq != 0:
             return
         import wandb
+
         wandb.log(metrics)
 
 
@@ -203,7 +217,7 @@ class EarlyStopping(Callback):
         self.monitor = monitor
         self.patience = patience
         self.min_delta = min_delta
-        self.best = float('inf')
+        self.best = float("inf")
         self.wait = 0
         self.should_stop = False
 
@@ -219,5 +233,8 @@ class EarlyStopping(Callback):
             self.wait += 1
             if self.wait >= self.patience:
                 self.should_stop = True
-                cprint(f"Early stopping triggered at epoch {epoch} "
-                       f"(no improvement for {self.patience} epochs)", 'yellow')
+                cprint(
+                    f"Early stopping triggered at epoch {epoch} "
+                    f"(no improvement for {self.patience} epochs)",
+                    "yellow",
+                )

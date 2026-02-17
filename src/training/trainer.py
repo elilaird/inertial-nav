@@ -450,11 +450,11 @@ class Trainer:
         u = u[Ns[0] : Ns[1]]
 
         N0, N_end = self._get_start_and_end(self.seq_dim, u)
-        t = t[N0:N_end].double()
-        ang_gt = ang_gt[N0:N_end].double()
-        p_gt = (p_gt[N0:N_end] - p_gt[N0]).double()
-        v_gt = v_gt[N0:N_end].double()
-        u = self.dataset.add_noise(u[N0:N_end].double())
+        t = t[N0:N_end].double().to(self.device)
+        ang_gt = ang_gt[N0:N_end].double().to(self.device)
+        p_gt = (p_gt[N0:N_end] - p_gt[N0]).double().to(self.device)
+        v_gt = v_gt[N0:N_end].double().to(self.device)
+        u = self.dataset.add_noise(u[N0:N_end].double().to(self.device))
         N = t.shape[0]
 
         list_rpe = self.dataset.list_rpe.get(dataset_name)

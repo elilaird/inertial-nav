@@ -111,8 +111,8 @@ class TorchIEKF(torch.nn.Module):
         self._register_Q()
 
         # Input normalization parameters (set via get_normalize_u)
-        self.u_loc = None
-        self.u_std = None
+        self.register_buffer("u_loc", None)
+        self.register_buffer("u_std", None)
 
         # Optional neural network components
         self.initprocesscov_net = None
@@ -333,8 +333,16 @@ class TorchIEKF(torch.nn.Module):
         b_acc0 = t.new_zeros(3).double()
         Rot_c_i0 = torch.eye(3).double()
         t_c_i0 = t.new_zeros(3).double()
-        return dict(Rot=Rot0, v=v0, p=p0, b_omega=b_omega0, b_acc=b_acc0,
-                    Rot_c_i=Rot_c_i0, t_c_i=t_c_i0, P=P)
+        return dict(
+            Rot=Rot0,
+            v=v0,
+            p=p0,
+            b_omega=b_omega0,
+            b_acc=b_acc0,
+            Rot_c_i=Rot_c_i0,
+            t_c_i=t_c_i0,
+            P=P,
+        )
 
     @staticmethod
     def detach_state(state):
@@ -365,39 +373,72 @@ class TorchIEKF(torch.nn.Module):
 
         # Allocate chunk trajectory tensors
         Rot = t_chunk.new_zeros(K, 3, 3).double()
-        v   = t_chunk.new_zeros(K, 3).double()
-        p   = t_chunk.new_zeros(K, 3).double()
-        b_omega  = t_chunk.new_zeros(K, 3).double()
-        b_acc    = t_chunk.new_zeros(K, 3).double()
-        Rot_c_i  = t_chunk.new_zeros(K, 3, 3).double()
-        t_c_i    = t_chunk.new_zeros(K, 3).double()
+        v = t_chunk.new_zeros(K, 3).double()
+        p = t_chunk.new_zeros(K, 3).double()
+        b_omega = t_chunk.new_zeros(K, 3).double()
+        b_acc = t_chunk.new_zeros(K, 3).double()
+        Rot_c_i = t_chunk.new_zeros(K, 3, 3).double()
+        t_c_i = t_chunk.new_zeros(K, 3).double()
 
         # Seed first timestep from incoming state
-        Rot[0]     = state["Rot"]
-        v[0]       = state["v"]
-        p[0]       = state["p"]
+        Rot[0] = state["Rot"]
+        v[0] = state["v"]
+        p[0] = state["p"]
         b_omega[0] = state["b_omega"]
-        b_acc[0]   = state["b_acc"]
+        b_acc[0] = state["b_acc"]
         Rot_c_i[0] = state["Rot_c_i"]
-        t_c_i[0]   = state["t_c_i"]
-        P          = state["P"]
+        t_c_i[0] = state["t_c_i"]
+        P = state["P"]
 
         for i in range(1, K):
-            Rot_i, v_i, p_i, b_omega_i, b_acc_i, Rot_c_i_i, t_c_i_i, P_i = \
+            Rot_i, v_i, p_i, b_omega_i, b_acc_i, Rot_c_i_i, t_c_i_i, P_i = (
                 self.propagate(
-                    Rot[i-1], v[i-1], p[i-1], b_omega[i-1], b_acc[i-1],
-                    Rot_c_i[i-1], t_c_i[i-1], P, u_chunk[i], dt_chunk[i-1],
+                    Rot[i - 1],
+                    v[i - 1],
+                    p[i - 1],
+                    b_omega[i - 1],
+                    b_acc[i - 1],
+                    Rot_c_i[i - 1],
+                    t_c_i[i - 1],
+                    P,
+                    u_chunk[i],
+                    dt_chunk[i - 1],
                 )
-            (Rot[i], v[i], p[i], b_omega[i], b_acc[i],
-             Rot_c_i[i], t_c_i[i], P) = self.update(
-                Rot_i, v_i, p_i, b_omega_i, b_acc_i, Rot_c_i_i, t_c_i_i,
-                P_i, u_chunk[i], i, measurements_covs_chunk[i],
+            )
+            (
+                Rot[i],
+                v[i],
+                p[i],
+                b_omega[i],
+                b_acc[i],
+                Rot_c_i[i],
+                t_c_i[i],
+                P,
+            ) = self.update(
+                Rot_i,
+                v_i,
+                p_i,
+                b_omega_i,
+                b_acc_i,
+                Rot_c_i_i,
+                t_c_i_i,
+                P_i,
+                u_chunk[i],
+                i,
+                measurements_covs_chunk[i],
             )
 
         traj = (Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i)
-        new_state = dict(Rot=Rot[-1], v=v[-1], p=p[-1],
-                         b_omega=b_omega[-1], b_acc=b_acc[-1],
-                         Rot_c_i=Rot_c_i[-1], t_c_i=t_c_i[-1], P=P)
+        new_state = dict(
+            Rot=Rot[-1],
+            v=v[-1],
+            p=p[-1],
+            b_omega=b_omega[-1],
+            b_acc=b_acc[-1],
+            Rot_c_i=Rot_c_i[-1],
+            t_c_i=t_c_i[-1],
+            P=P,
+        )
         return traj, new_state
 
     def init_run(self, dt, u, p_mes, v_mes, N, ang0):
