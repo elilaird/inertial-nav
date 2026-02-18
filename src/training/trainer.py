@@ -18,6 +18,7 @@ from src.training.callbacks import (
     CheckpointCallback,
     WandBLogger,
     EarlyStopping,
+    TestEvalCallback,
 )
 from src.utils.wandb_utils import log_config
 
@@ -135,6 +136,18 @@ class Trainer:
         if self.logging_cfg.get("use_wandb", False):
             wandb_cfg = self.logging_cfg.get("wandb", {})
             cb_list.add(WandBLogger(wandb_cfg, model=self.model))
+
+        # Test evaluation during training
+        test_eval_cfg = self.training_cfg.get("validation", {}).get(
+            "test_eval", {}
+        )
+        if test_eval_cfg.get("enabled", False):
+            cb_list.add(
+                TestEvalCallback(
+                    dataset=self.dataset,
+                    interval=test_eval_cfg.get("interval", 5),
+                )
+            )
 
         # Early stopping
         es_cfg = self.training_cfg.get("early_stopping", {})
@@ -450,11 +463,11 @@ class Trainer:
         u = u[Ns[0] : Ns[1]]
 
         N0, N_end = self._get_start_and_end(self.seq_dim, u)
-        t = t[N0:N_end].double().to(self.device)
-        ang_gt = ang_gt[N0:N_end].double().to(self.device)
-        p_gt = (p_gt[N0:N_end] - p_gt[N0]).double().to(self.device)
-        v_gt = v_gt[N0:N_end].double().to(self.device)
-        u = self.dataset.add_noise(u[N0:N_end].double().to(self.device))
+        t = t[N0:N_end].float().to(self.device)
+        ang_gt = ang_gt[N0:N_end].float().to(self.device)
+        p_gt = (p_gt[N0:N_end] - p_gt[N0]).float().to(self.device)
+        v_gt = v_gt[N0:N_end].float().to(self.device)
+        u = self.dataset.add_noise(u[N0:N_end].float().to(self.device))
         N = t.shape[0]
 
         list_rpe = self.dataset.list_rpe.get(dataset_name)
@@ -560,11 +573,11 @@ class Trainer:
 
         # Random subsequence sampling
         N0, N_end = self._get_start_and_end(self.seq_dim, u)
-        t = t[N0:N_end].double().to(self.device)
-        ang_gt = ang_gt[N0:N_end].double().to(self.device)
-        p_gt = (p_gt[N0:N_end] - p_gt[N0]).double().to(self.device)
-        v_gt = v_gt[N0:N_end].double().to(self.device)
-        u = u[N0:N_end].double().to(self.device)
+        t = t[N0:N_end].float().to(self.device)
+        ang_gt = ang_gt[N0:N_end].float().to(self.device)
+        p_gt = (p_gt[N0:N_end] - p_gt[N0]).float().to(self.device)
+        v_gt = v_gt[N0:N_end].float().to(self.device)
+        u = u[N0:N_end].float().to(self.device)
 
         # Add noise during training
         u = self.dataset.add_noise(u)
@@ -599,18 +612,18 @@ class Trainer:
         for dataset_name, Ns in self.dataset.datasets_train_filter.items():
             t, ang_gt, p_gt, v_gt, u = self.dataset.get_data(dataset_name)
             end = Ns[1] if Ns[1] is not None else p_gt.shape[0]
-            p_gt = p_gt[:end].double().to(self.device)
+            p_gt = p_gt[:end].float().to(self.device)
             ang_gt_sub = ang_gt[:end]
 
             # Build rotation matrices from Euler angles
             Rot_gt = torch.zeros(
-                end, 3, 3, dtype=torch.float64, device=self.device
+                end, 3, 3, dtype=torch.float32, device=self.device
             )
             for k in range(end):
                 Rot_gt[k] = TorchIEKF.from_rpy_torch(
-                    ang_gt_sub[k][0].double(),
-                    ang_gt_sub[k][1].double(),
-                    ang_gt_sub[k][2].double(),
+                    ang_gt_sub[k][0].float(),
+                    ang_gt_sub[k][1].float(),
+                    ang_gt_sub[k][2].float(),
                 ).to(self.device)
 
             rpe_data = self.loss_fn.precompute(Rot_gt, p_gt)

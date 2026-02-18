@@ -26,11 +26,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from src.core.torch_iekf import TorchIEKF
-from src.evaluation.metrics import (
-    compute_rpe,
-    compute_ate,
-    compute_orientation_error,
-)
+from src.evaluation.evaluator import evaluate_sequence, format_metrics
 from src.evaluation.visualization import (
     plot_trajectory_2d,
     plot_trajectory_3d,
@@ -40,104 +36,19 @@ from src.evaluation.visualization import (
 from src.data.kitti_dataset import KITTIDataset
 
 
+# Keep backward-compatible aliases
 def test_sequence(iekf, dataset, dataset_name, cfg):
+    """Run filter on a single sequence and compute metrics.
+
+    Thin wrapper around ``evaluate_sequence`` for backward compatibility.
+    The *cfg* argument is accepted but not used.
     """
-    Run filter on a single sequence and compute metrics.
-
-    Args:
-        iekf: TorchIEKF model (in eval mode).
-        dataset: Dataset instance.
-        dataset_name: Name of the sequence to test.
-        cfg: Full config.
-
-    Returns:
-        Dict with metrics, predictions, and ground truth.
-    """
-    t, ang_gt, p_gt, v_gt, u = dataset.get_data(dataset_name)
-
-    # Normalize IMU for neural networks
-    u_normalized = dataset.normalize(u)
-
-    # Run neural networks to get covariances
-    iekf.eval()
-    with torch.no_grad():
-        measurements_covs = iekf.forward_nets(u_normalized)
-
-    # Run filter (torch, no grad) for fast inference
-    N = len(t)
-    with torch.no_grad():
-        Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i = iekf.run(
-            t, u, measurements_covs, v_gt, p_gt, N, ang_gt[0]
-        )
-
-    # Convert outputs to numpy
-    Rot = Rot.cpu().numpy()
-    v = v.cpu().numpy()
-    p = p.cpu().numpy()
-    b_omega = b_omega.cpu().numpy()
-    b_acc = b_acc.cpu().numpy()
-
-    # Convert ground truth to numpy
-    p_gt_np = (p_gt - p_gt[0]).numpy()
-    ang_gt_np = ang_gt.numpy()
-    t_np = t.numpy()
-    measurements_covs_np = measurements_covs.cpu().numpy()
-
-    # Build ground truth rotation matrices
-    N = Rot.shape[0]
-    Rot_gt = np.zeros_like(Rot)
-    for i in range(N):
-        from src.utils.geometry import from_rpy
-
-        Rot_gt[i] = from_rpy(ang_gt_np[i, 0], ang_gt_np[i, 1], ang_gt_np[i, 2])
-
-    # Compute metrics
-    rpe = compute_rpe(Rot, p, Rot_gt, p_gt_np)
-    ate = compute_ate(p, p_gt_np, align=True)
-    orient_err = compute_orientation_error(Rot, Rot_gt)
-
-    metrics = {
-        "rpe": rpe,
-        "ate": ate,
-        "orientation_error": orient_err,
-    }
-
-    results = {
-        "metrics": metrics,
-        "Rot": Rot,
-        "v": v,
-        "p": p,
-        "b_omega": b_omega,
-        "b_acc": b_acc,
-        "p_gt": p_gt_np,
-        "Rot_gt": Rot_gt,
-        "t": t_np,
-        "measurements_covs": measurements_covs_np,
-        "name": dataset_name,
-    }
-
-    return results
+    return evaluate_sequence(iekf, dataset, dataset_name)
 
 
 def print_metrics(results, dataset_name):
     """Print metrics for a sequence."""
-    metrics = results["metrics"]
-    rpe = metrics["rpe"]
-    ate = metrics["ate"]
-    orient = metrics["orientation_error"]
-
-    print(f"\n{'='*60}")
-    print(f"Results for: {dataset_name}")
-    print(f"{'='*60}")
-    print(
-        f"  RPE:  mean={rpe['mean']:.3f}%  std={rpe['std']:.3f}%  rmse={rpe['rmse']:.3f}%"
-    )
-    print(
-        f"  ATE:  mean={ate['mean']:.2f}m  rmse={ate['rmse']:.2f}m  max={ate['max']:.2f}m"
-    )
-    print(
-        f"  Orient: mean={orient['mean_deg']:.2f}°  max={orient['max_deg']:.2f}°"
-    )
+    print("\n" + format_metrics(results, dataset_name))
 
 
 @hydra.main(config_path="../configs", config_name="config", version_base=None)
@@ -221,7 +132,10 @@ def main(cfg: DictConfig):
             p = results["p"]
             p_gt = results["p_gt"]
 
-            fig_2d = plot_trajectory_2d(p, p_gt, seq_name=dataset_name)
+            p_imu = results.get("p_imu")
+            fig_2d = plot_trajectory_2d(
+                p, p_gt, seq_name=dataset_name, p_imu=p_imu
+            )
             fig_2d.savefig(
                 os.path.join(results_dir, f"{dataset_name}_trajectory_2d.png"),
                 dpi=150,
@@ -238,25 +152,34 @@ def main(cfg: DictConfig):
 
             if use_wandb:
                 metrics = results["metrics"]
-                wandb.log(
-                    {
-                        f"test/{dataset_name}/rpe_mean": metrics["rpe"][
-                            "mean"
-                        ],
-                        f"test/{dataset_name}/ate_rmse": metrics["ate"][
-                            "rmse"
-                        ],
-                        f"test/{dataset_name}/orient_mean_deg": metrics[
-                            "orientation_error"
-                        ]["mean_deg"],
-                        f"test/{dataset_name}/trajectory_2d": wandb.Image(
-                            fig_2d
-                        ),
-                        f"test/{dataset_name}/error_timeline": wandb.Image(
-                            fig_err
-                        ),
-                    }
-                )
+                log_dict = {
+                    f"test/{dataset_name}/t_rel": metrics["rpe"]["t_rel"],
+                    f"test/{dataset_name}/r_rel": metrics["rpe"]["r_rel"],
+                    f"test/{dataset_name}/ate_rmse": metrics["ate"]["rmse"],
+                    f"test/{dataset_name}/orient_mean_deg": metrics[
+                        "orientation_error"
+                    ]["mean_deg"],
+                    f"test/{dataset_name}/trajectory_2d": wandb.Image(fig_2d),
+                    f"test/{dataset_name}/error_timeline": wandb.Image(
+                        fig_err
+                    ),
+                }
+                if "metrics_imu" in results:
+                    mi = results["metrics_imu"]
+                    log_dict.update(
+                        {
+                            f"test/{dataset_name}/imu_t_rel": mi["rpe"][
+                                "t_rel"
+                            ],
+                            f"test/{dataset_name}/imu_r_rel": mi["rpe"][
+                                "r_rel"
+                            ],
+                            f"test/{dataset_name}/imu_ate_rmse": mi["ate"][
+                                "rmse"
+                            ],
+                        }
+                    )
+                wandb.log(log_dict)
 
             plt.close("all")
 
@@ -268,20 +191,47 @@ def main(cfg: DictConfig):
 
     # Print summary
     if all_results:
-        rpe_means = [
-            r["metrics"]["rpe"]["mean"]
+        t_rels = [
+            r["metrics"]["rpe"]["t_rel"]
             for r in all_results.values()
-            if not np.isnan(r["metrics"]["rpe"]["mean"])
+            if not np.isnan(r["metrics"]["rpe"]["t_rel"])
+        ]
+        r_rels = [
+            r["metrics"]["rpe"]["r_rel"]
+            for r in all_results.values()
+            if not np.isnan(r["metrics"]["rpe"]["r_rel"])
         ]
         ate_rmses = [r["metrics"]["ate"]["rmse"] for r in all_results.values()]
 
         print(f"\n{'='*60}")
         print("Overall Summary")
         print(f"{'='*60}")
-        if rpe_means:
-            print(f"  Mean RPE: {np.mean(rpe_means):.3f}%")
+        if t_rels:
+            print(f"  Mean t_rel: {np.mean(t_rels):.3f}%")
+        if r_rels:
+            print(f"  Mean r_rel: {np.mean(r_rels):.4f} deg/m")
         if ate_rmses:
             print(f"  Mean ATE RMSE: {np.mean(ate_rmses):.2f}m")
+
+        # IMU baseline summary
+        imu_t = [
+            r["metrics_imu"]["rpe"]["t_rel"]
+            for r in all_results.values()
+            if "metrics_imu" in r
+            and not np.isnan(r["metrics_imu"]["rpe"]["t_rel"])
+        ]
+        imu_r = [
+            r["metrics_imu"]["rpe"]["r_rel"]
+            for r in all_results.values()
+            if "metrics_imu" in r
+            and not np.isnan(r["metrics_imu"]["rpe"]["r_rel"])
+        ]
+        if imu_t or imu_r:
+            print(f"  --- IMU integration baseline ---")
+            if imu_t:
+                print(f"  Mean t_rel: {np.mean(imu_t):.3f}%")
+            if imu_r:
+                print(f"  Mean r_rel: {np.mean(imu_r):.4f} deg/m")
 
     if use_wandb:
         wandb.finish()

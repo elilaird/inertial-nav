@@ -203,6 +203,84 @@ class WandBLogger(Callback):
         wandb.log(metrics)
 
 
+class TestEvalCallback(Callback):
+    """
+    Run the IEKF filter on validation sequences every *interval* epochs
+    and log RPE / ATE / orientation-error metrics to WandB and console.
+
+    Args:
+        dataset: Dataset instance (must expose ``datasets_validatation_filter``
+                 and ``get_data`` / ``normalize``).
+        interval: Evaluate every N epochs (default: 5).
+    """
+
+    def __init__(self, dataset, interval=5):
+        self.dataset = dataset
+        self.interval = max(1, interval)
+
+    def on_epoch_end(self, trainer, epoch, metrics):
+        if epoch % self.interval != 0:
+            return
+
+        from src.evaluation.evaluator import evaluate_sequence, format_metrics
+
+        was_training = trainer.model.training
+        results_all = {}
+
+        for seq_name in self.dataset.datasets_validatation_filter:
+            try:
+                results = evaluate_sequence(
+                    trainer.model, self.dataset, seq_name
+                )
+                results_all[seq_name] = results
+                cprint(format_metrics(results, seq_name), "cyan")
+
+                m = results["metrics"]
+                metrics[f"val_eval/{seq_name}/t_rel"] = m["rpe"]["t_rel"]
+                metrics[f"val_eval/{seq_name}/r_rel"] = m["rpe"]["r_rel"]
+                metrics[f"val_eval/{seq_name}/ate_rmse"] = m["ate"]["rmse"]
+                metrics[f"val_eval/{seq_name}/orient_mean_deg"] = m[
+                    "orientation_error"
+                ]["mean_deg"]
+
+                if "metrics_imu" in results:
+                    mi = results["metrics_imu"]
+                    metrics[f"val_eval/{seq_name}/imu_t_rel"] = mi["rpe"][
+                        "t_rel"
+                    ]
+                    metrics[f"val_eval/{seq_name}/imu_r_rel"] = mi["rpe"][
+                        "r_rel"
+                    ]
+                    metrics[f"val_eval/{seq_name}/imu_ate_rmse"] = mi["ate"][
+                        "rmse"
+                    ]
+            except Exception as exc:
+                cprint(
+                    f"  [test_eval] Error evaluating {seq_name}: {exc}",
+                    "yellow",
+                )
+
+        # Aggregate across sequences
+        rpe_means = [
+            r["metrics"]["rpe"]["mean"]
+            for r in results_all.values()
+            if not float("nan") == r["metrics"]["rpe"]["mean"]
+        ]
+        ate_rmses = [r["metrics"]["ate"]["rmse"] for r in results_all.values()]
+        if rpe_means:
+            metrics["val_eval/rpe_mean"] = float(
+                sum(rpe_means) / len(rpe_means)
+            )
+        if ate_rmses:
+            metrics["val_eval/ate_rmse"] = float(
+                sum(ate_rmses) / len(ate_rmses)
+            )
+
+        # Restore training mode
+        if was_training:
+            trainer.model.train()
+
+
 class EarlyStopping(Callback):
     """
     Stop training if monitored metric stops improving.

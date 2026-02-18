@@ -34,6 +34,10 @@ validation:
     enabled: true
     interval: 1 # Validate every N epochs
     save_best: true # Save checkpoint when validation improves
+    # Run full filter evaluation on val sequences during training
+    test_eval:
+        enabled: true
+        interval: 2 # Evaluate every N epochs
 
 # Checkpointing
 checkpointing:
