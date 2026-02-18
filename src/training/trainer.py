@@ -305,7 +305,7 @@ class Trainer:
                 self.model.parameters(), self.max_grad_norm
             )
 
-            if np.isnan(g_norm) or g_norm > 3 * self.max_grad_norm:
+            if torch.isnan(g_norm) or g_norm > 3 * self.max_grad_norm:
                 cprint(f"  gradient norm too large: {g_norm:.5f}", "yellow")
                 self.optimizer.zero_grad()
             else:
@@ -518,7 +518,7 @@ class Trainer:
                 self.model.parameters(), self.max_grad_norm
             )
 
-            if np.isnan(g_norm) or g_norm > 3 * self.max_grad_norm:
+            if torch.isnan(g_norm) or g_norm > 3 * self.max_grad_norm:
                 cprint(
                     f"  [bptt chunk {ci}] grad norm too large: {g_norm:.4f}",
                     "yellow",

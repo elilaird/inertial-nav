@@ -24,7 +24,7 @@ fi
 
 HOME_DIR=${HOME_DIR:-"/users/ejlaird/Projects/inertial-nav"}
 ENV_DIR=${ENV_DIR:-"/lustre/smuexa01/client/users/ejlaird/envs"}
-WORK_DIR=${WORK_DIR:-"/lustre/smuexa01/client/users/ejlaird/workdirs/inertial-nav"}
+WORK_DIR=${WORK_DIR:-"/lustre/smuexa01/client/users/ejlaird/inertial_nav/workdirs"}
 
 if [ "${BRANCH}" = "local" ]; then
     WORK_DIR=${HOME_DIR}
