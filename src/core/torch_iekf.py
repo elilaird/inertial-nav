@@ -95,17 +95,17 @@ class TorchIEKF(torch.nn.Module):
         self._copy_scalar_params(params)
 
         # Register tensor-valued parameters as buffers
-        self.register_buffer("g", torch.tensor(params.g, dtype=torch.float64))
+        self.register_buffer("g", torch.tensor(params.g, dtype=torch.float32))
         self.register_buffer(
             "cov0_measurement",
-            torch.tensor([params.cov_lat, params.cov_up], dtype=torch.float64),
+            torch.tensor([params.cov_lat, params.cov_up], dtype=torch.float32),
         )
 
         # Identity matrix buffers (moved automatically by model.to(device))
-        self.register_buffer("Id2", torch.eye(2, dtype=torch.float64))
-        self.register_buffer("Id3", torch.eye(3, dtype=torch.float64))
-        self.register_buffer("Id6", torch.eye(6, dtype=torch.float64))
-        self.register_buffer("IdP", torch.eye(self.P_dim, dtype=torch.float64))
+        self.register_buffer("Id2", torch.eye(2, dtype=torch.float32))
+        self.register_buffer("Id3", torch.eye(3, dtype=torch.float32))
+        self.register_buffer("Id6", torch.eye(6, dtype=torch.float32))
+        self.register_buffer("IdP", torch.eye(self.P_dim, dtype=torch.float32))
 
         # Process noise covariance buffer
         self._register_Q()
@@ -153,7 +153,7 @@ class TorchIEKF(torch.nn.Module):
                 self.cov_t_c_i,
                 self.cov_t_c_i,
             ],
-            dtype=torch.float64,
+            dtype=torch.float32,
         )
         self.register_buffer("Q", torch.diag(q_vals))
 
@@ -328,11 +328,11 @@ class TorchIEKF(torch.nn.Module):
         P = self.init_covariance()
         Rot0 = self.from_rpy_torch(ang0[0], ang0[1], ang0[2])
         v0 = v_mes[0].clone()
-        p0 = t.new_zeros(3).double()
-        b_omega0 = t.new_zeros(3).double()
-        b_acc0 = t.new_zeros(3).double()
-        Rot_c_i0 = torch.eye(3).double()
-        t_c_i0 = t.new_zeros(3).double()
+        p0 = t.new_zeros(3).float()
+        b_omega0 = t.new_zeros(3).float()
+        b_acc0 = t.new_zeros(3).float()
+        Rot_c_i0 = torch.eye(3).float()
+        t_c_i0 = t.new_zeros(3).float()
         return dict(
             Rot=Rot0,
             v=v0,
@@ -372,13 +372,13 @@ class TorchIEKF(torch.nn.Module):
         dt_chunk = t_chunk[1:] - t_chunk[:-1]  # (K-1,)
 
         # Allocate chunk trajectory tensors
-        Rot = t_chunk.new_zeros(K, 3, 3).double()
-        v = t_chunk.new_zeros(K, 3).double()
-        p = t_chunk.new_zeros(K, 3).double()
-        b_omega = t_chunk.new_zeros(K, 3).double()
-        b_acc = t_chunk.new_zeros(K, 3).double()
-        Rot_c_i = t_chunk.new_zeros(K, 3, 3).double()
-        t_c_i = t_chunk.new_zeros(K, 3).double()
+        Rot = t_chunk.new_zeros(K, 3, 3).float()
+        v = t_chunk.new_zeros(K, 3).float()
+        p = t_chunk.new_zeros(K, 3).float()
+        b_omega = t_chunk.new_zeros(K, 3).float()
+        b_acc = t_chunk.new_zeros(K, 3).float()
+        Rot_c_i = t_chunk.new_zeros(K, 3, 3).float()
+        t_c_i = t_chunk.new_zeros(K, 3).float()
 
         # Seed first timestep from incoming state
         Rot[0] = state["Rot"]
@@ -875,7 +875,7 @@ class TorchIEKF(torch.nn.Module):
                 self.cov_t_c_i,
                 self.cov_t_c_i,
             ],
-            dtype=torch.float64,
+            dtype=torch.float32,
             device=self.device,
         )
         self.Q.data.copy_(torch.diag(q_vals))
@@ -906,12 +906,8 @@ class TorchIEKF(torch.nn.Module):
 
     def get_normalize_u(self, dataset):
         """Load normalization parameters from dataset and move to model device."""
-        self.u_loc = (
-            dataset.normalize_factors["u_loc"].double().to(self.device)
-        )
-        self.u_std = (
-            dataset.normalize_factors["u_std"].double().to(self.device)
-        )
+        self.u_loc = dataset.normalize_factors["u_loc"].float().to(self.device)
+        self.u_std = dataset.normalize_factors["u_std"].float().to(self.device)
 
     # ------------------------------------------------------------------
     # Serialization

@@ -120,7 +120,7 @@ class Trainer:
         # Checkpointing
         ckpt_cfg = self.training_cfg.get("checkpointing", {})
         if ckpt_cfg.get("enabled", True):
-            paths_cfg = self.cfg.get("paths", {})
+            paths_cfg = self.cfg.get("paths")
             save_dir = paths_cfg.get("checkpoints", "checkpoints")
             cb_list.add(
                 CheckpointCallback(

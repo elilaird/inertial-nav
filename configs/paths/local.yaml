@@ -8,13 +8,13 @@ data: /lustre/smuexa01/client/users/ejlaird/data/kitti
 data_save: "/lustre/smuexa01/client/users/ejlaird/kitti"
 
 # Test results output directory
-results: "/lustre/smuexa01/client/users/ejlaird/inertial_nav/results"
+results: "${hydra:run.dir}/results"
 
 # Temporary files and checkpoints during training
-temp: "/lustre/smuexa01/client/users/ejlaird/inertial_nav/temp"
+temp: "${hydra:run.dir}/temp"
 
 # Model checkpoints
-checkpoints: "/lustre/smuexa01/client/users/ejlaird/inertial_nav/checkpoints"
+checkpoints: ${hydra:run.dir}/checkpoints
 
 # WandB artifacts and logs
-wandb: "/lustre/smuexa01/client/users/ejlaird/inertial_nav/wandb"
+wandb: "${hydra:run.dir}/wandb"

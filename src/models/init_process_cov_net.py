@@ -40,23 +40,19 @@ class InitProcessCovNet(BaseCovarianceNet):
         # Beta parameters (not learned, registered as buffers for device tracking)
         self.register_buffer(
             "beta_process",
-            initial_beta * torch.ones(2).double(),
+            initial_beta * torch.ones(2),
         )
         self.register_buffer(
             "beta_initialization",
-            initial_beta * torch.ones(2).double(),
+            initial_beta * torch.ones(2),
         )
 
         # Learnable initial covariance scaling
-        self.factor_initial_covariance = nn.Linear(
-            1, output_dim, bias=False
-        ).double()
+        self.factor_initial_covariance = nn.Linear(1, output_dim, bias=False)
         self.factor_initial_covariance.weight.data[:] /= weight_scale
 
         # Learnable process covariance scaling
-        self.factor_process_covariance = nn.Linear(
-            1, output_dim, bias=False
-        ).double()
+        self.factor_process_covariance = nn.Linear(1, output_dim, bias=False)
         self.factor_process_covariance.weight.data[:] /= weight_scale
 
         self.tanh = nn.Tanh()
@@ -75,7 +71,7 @@ class InitProcessCovNet(BaseCovarianceNet):
         """
         device = self.factor_initial_covariance.weight.device
         alpha = self.factor_initial_covariance(
-            torch.ones(1, dtype=torch.float64, device=device)
+            torch.ones(1, dtype=torch.float32, device=device)
         ).squeeze()
         beta = 10 ** (self.tanh(alpha))
         return beta
@@ -90,7 +86,7 @@ class InitProcessCovNet(BaseCovarianceNet):
         """
         device = self.factor_process_covariance.weight.device
         alpha = self.factor_process_covariance(
-            torch.ones(1, dtype=torch.float64, device=device)
+            torch.ones(1, dtype=torch.float32, device=device)
         )
         beta = 10 ** (self.tanh(alpha))
         return beta

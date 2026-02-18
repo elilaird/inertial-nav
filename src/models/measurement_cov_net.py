@@ -59,7 +59,7 @@ class MeasurementCovNet(BaseCovarianceNet):
         # Beta scaling parameter (not learned, registered as buffer for device tracking)
         self.register_buffer(
             "beta_measurement",
-            initial_beta * torch.ones(output_dim).double(),
+            initial_beta * torch.ones(output_dim),
         )
 
         self.tanh = nn.Tanh()
@@ -76,13 +76,13 @@ class MeasurementCovNet(BaseCovarianceNet):
             nn.ReplicationPad1d(kernel_size - 1),
             nn.ReLU(),
             nn.Dropout(p=dropout),
-        ).double()
+        )
 
         # Linear head
         self.cov_lin = nn.Sequential(
             nn.Linear(cnn_channels, output_dim),
             nn.Tanh(),
-        ).double()
+        )
 
         # Initialize linear layer weights to be small
         self.cov_lin[0].bias.data[:] *= bias_scale

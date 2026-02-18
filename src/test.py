@@ -10,11 +10,13 @@ Usage:
 
 import os
 import sys
+import logging
 import pickle
-
+import matplotlib.pyplot as plt
 import hydra
 import numpy as np
 import torch
+import wandb
 from omegaconf import DictConfig, OmegaConf
 
 # Ensure the project root is on sys.path so 'src' is importable
@@ -35,6 +37,7 @@ from src.evaluation.visualization import (
     plot_error_timeline,
     plot_covariance_timeline,
 )
+from src.data.kitti_dataset import KITTIDataset
 
 
 def test_sequence(iekf, dataset, dataset_name, cfg):
@@ -161,14 +164,26 @@ def main(cfg: DictConfig):
         checkpoint_path, map_location="cpu", weights_only=False
     )
     if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
-        iekf.load_state_dict(checkpoint["model_state_dict"])
+        state_dict = checkpoint["model_state_dict"]
     else:
-        iekf.load_state_dict(checkpoint)
+        state_dict = checkpoint
+    # Use strict=False to gracefully handle checkpoints saved by older code
+    # that stored normalization buffers (u_loc, u_std) directly on the model.
+    missing, unexpected = iekf.load_state_dict(state_dict, strict=False)
+    if unexpected:
+        logging.getLogger(__name__).warning(
+            "Ignored unexpected key(s) in checkpoint: %s", unexpected
+        )
+    if missing:
+        logging.getLogger(__name__).warning(
+            "Missing key(s) not found in checkpoint: %s", missing
+        )
+    # Legacy checkpoints were saved in double precision; cast to float32 so
+    # the model is consistent with float32 input tensors at inference time.
+    iekf = iekf.float()
     iekf.eval()
 
     # Build dataset
-    from src.data.kitti_dataset import KITTIDataset
-
     paths_cfg = cfg.get("paths", {})
     dataset_cfg = OmegaConf.to_container(cfg.get("dataset", {}), resolve=True)
     dataset_cfg["path_data_save"] = paths_cfg.get("data", "../data")
@@ -179,8 +194,6 @@ def main(cfg: DictConfig):
     # Optional WandB
     use_wandb = cfg.get("logging", {}).get("use_wandb", False)
     if use_wandb:
-        import wandb
-
         wandb.init(
             project=cfg.get("logging", {}).get("project", "ai-imu-dr"),
             config=OmegaConf.to_container(cfg, resolve=True),
@@ -224,8 +237,6 @@ def main(cfg: DictConfig):
             )
 
             if use_wandb:
-                import wandb
-
                 metrics = results["metrics"]
                 wandb.log(
                     {
@@ -246,8 +257,6 @@ def main(cfg: DictConfig):
                         ),
                     }
                 )
-
-            import matplotlib.pyplot as plt
 
             plt.close("all")
 
@@ -275,8 +284,6 @@ def main(cfg: DictConfig):
             print(f"  Mean ATE RMSE: {np.mean(ate_rmses):.2f}m")
 
     if use_wandb:
-        import wandb
-
         wandb.finish()
 
 
