@@ -80,7 +80,7 @@ class Trainer:
         # Device
         device_str = self.training_cfg.get("device", "auto")
         self.device = self._resolve_device(device_str)
-        cprint(f"Using device: {self.device}", "cyan")
+        cprint(f"Using device: {self.device}", "cyan", flush=True)
 
         # Build components
         self.model = self._build_model()
@@ -183,13 +183,14 @@ class Trainer:
 
             print(
                 f"Epoch {epoch:3d} | loss: {epoch_metrics.get('train/loss_epoch', float('nan')):.5f} "
-                f"| time: {elapsed:.1f}s"
+                f"| time: {elapsed:.1f}s",
+                flush=True,
             )
 
             # Check early stopping
             for cb in self.callbacks.callbacks:
                 if isinstance(cb, EarlyStopping) and cb.should_stop:
-                    print("Training stopped early.")
+                    print("Training stopped early.", flush=True)
                     self.callbacks.on_train_end(self)
                     return epoch_metrics
 
@@ -277,6 +278,7 @@ class Trainer:
                     cprint(
                         f"  [step {step}, seq {j}] {dataset_name}: loss invalid",
                         "yellow",
+                        flush=True,
                     )
                     continue
                 elif (
@@ -289,6 +291,7 @@ class Trainer:
                         f"  [step {step}, seq {j}] {dataset_name}: "
                         f"loss too high ({loss.item():.5f})",
                         "yellow",
+                        flush=True,
                     )
                     continue
 
@@ -299,7 +302,8 @@ class Trainer:
                 step_metrics["train/loss_step"] = loss.item()
                 cprint(
                     f"  [step {step}, seq {j}] {dataset_name}: "
-                    f"loss={loss.item():.5f}"
+                    f"loss={loss.item():.5f}",
+                    flush=True,
                 )
 
                 self.callbacks.on_batch_end(
@@ -319,7 +323,11 @@ class Trainer:
             )
 
             if torch.isnan(g_norm) or g_norm > 3 * self.max_grad_norm:
-                cprint(f"  gradient norm too large: {g_norm:.5f}", "yellow")
+                cprint(
+                    f"  gradient norm too large: {g_norm:.5f}",
+                    "yellow",
+                    flush=True,
+                )
                 self.optimizer.zero_grad()
             else:
                 self.optimizer.step()
@@ -396,11 +404,17 @@ class Trainer:
             for j, dataset_name in enumerate(sampled):
                 Ns = train_filter[dataset_name]
                 seq_loss, seq_steps, seq_gnorms, seq_skipped = (
-                    self._train_step_bptt(dataset_name, Ns)
+                    self._train_step_bptt(dataset_name, Ns, step, j)
                 )
 
                 if seq_steps == 0:
                     n_skipped += 1
+                    cprint(
+                        f"  [step {step}, seq {j}] {dataset_name}: "
+                        f"all chunks invalid/skipped",
+                        "yellow",
+                        flush=True,
+                    )
                     continue
 
                 epoch_loss += seq_loss
@@ -408,6 +422,12 @@ class Trainer:
                 n_sequences += 1
                 n_skipped += seq_skipped
                 grad_norms.extend(seq_gnorms)
+                cprint(
+                    f"  [step {step}, seq {j}] {dataset_name}: "
+                    f"loss={seq_loss / seq_steps:.5f} "
+                    f"({seq_steps} chunks, {seq_skipped} skipped)",
+                    flush=True,
+                )
 
             if self.fast_dev_run:
                 break
@@ -431,7 +451,7 @@ class Trainer:
             metrics[f"train/lr_group{i}"] = pg["lr"]
         return metrics
 
-    def _train_step_bptt(self, dataset_name, Ns):
+    def _train_step_bptt(self, dataset_name, Ns, step=0, seq_idx=0):
         """
         Run one sequence with Truncated BPTT.
 
@@ -521,8 +541,24 @@ class Trainer:
                 and loss.item() > self.max_loss
             )
 
-            if is_invalid or is_too_high:
+            if is_invalid:
                 n_skipped += 1
+                cprint(
+                    f"  [step {step}, seq {seq_idx}, chunk {ci}] "
+                    f"{dataset_name}: loss invalid",
+                    "yellow",
+                    flush=True,
+                )
+                state = TorchIEKF.detach_state(new_state)
+                continue
+            if is_too_high:
+                n_skipped += 1
+                cprint(
+                    f"  [step {step}, seq {seq_idx}, chunk {ci}] "
+                    f"{dataset_name}: loss too high ({loss.item():.5f})",
+                    "yellow",
+                    flush=True,
+                )
                 state = TorchIEKF.detach_state(new_state)
                 continue
 

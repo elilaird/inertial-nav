@@ -223,6 +223,14 @@ class TestEvalCallback(Callback):
             return
 
         from src.evaluation.evaluator import evaluate_sequence, format_metrics
+        from src.evaluation.visualization import (
+            plot_trajectory_2d,
+            plot_orientation_and_biases,
+            plot_detailed_errors,
+            plot_body_frame_velocity,
+            plot_covariance_with_imu,
+        )
+        import matplotlib.pyplot as plt
 
         was_training = trainer.model.training
         results_all = {}
@@ -254,6 +262,68 @@ class TestEvalCallback(Callback):
                     metrics[f"val_eval/{seq_name}/imu_ate_rmse"] = mi["ate"][
                         "rmse"
                     ]
+
+                # Generate validation plots for WandB
+                try:
+                    import wandb
+
+                    timestamps = results["t"] - results["t"][0]
+                    p_imu = results.get("p_imu")
+
+                    fig_2d = plot_trajectory_2d(
+                        results["p"],
+                        results["p_gt"],
+                        seq_name=seq_name,
+                        p_imu=p_imu,
+                    )
+                    fig_orient = plot_orientation_and_biases(
+                        results["Rot"],
+                        results["Rot_gt"],
+                        results["b_omega"],
+                        results["b_acc"],
+                        timestamps=timestamps,
+                        seq_name=seq_name,
+                    )
+                    fig_errors = plot_detailed_errors(
+                        results["p"],
+                        results["p_gt"],
+                        timestamps=timestamps,
+                        seq_name=seq_name,
+                    )
+                    fig_vbody = plot_body_frame_velocity(
+                        results["v"],
+                        results["v_gt"],
+                        results["Rot"],
+                        results["Rot_gt"],
+                        timestamps=timestamps,
+                        seq_name=seq_name,
+                    )
+                    fig_cov_imu = plot_covariance_with_imu(
+                        results["measurements_covs"],
+                        results["u_normalized"],
+                        timestamps=timestamps,
+                        seq_name=seq_name,
+                    )
+
+                    metrics[f"val_eval/{seq_name}/trajectory_2d"] = (
+                        wandb.Image(fig_2d)
+                    )
+                    metrics[f"val_eval/{seq_name}/orientation_bias"] = (
+                        wandb.Image(fig_orient)
+                    )
+                    metrics[f"val_eval/{seq_name}/errors_detailed"] = (
+                        wandb.Image(fig_errors)
+                    )
+                    metrics[f"val_eval/{seq_name}/body_velocity"] = (
+                        wandb.Image(fig_vbody)
+                    )
+                    metrics[f"val_eval/{seq_name}/covs_with_imu"] = (
+                        wandb.Image(fig_cov_imu)
+                    )
+
+                    plt.close("all")
+                except Exception:
+                    plt.close("all")
             except Exception as exc:
                 cprint(
                     f"  [test_eval] Error evaluating {seq_name}: {exc}",

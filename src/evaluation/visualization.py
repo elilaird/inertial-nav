@@ -247,3 +247,319 @@ def plot_state_estimates(
     axs[-1].set_xlabel("Time (s)")
     fig.tight_layout()
     return fig
+
+
+def plot_orientation_and_biases(
+    Rot_pred, Rot_gt, b_omega, b_acc, timestamps=None, seq_name=""
+):
+    """
+    Plot orientation (roll/pitch/yaw) and IMU biases over time.
+
+    Corresponds to legacy fig2: orientation, gyro bias, accelerometer bias.
+
+    Args:
+        Rot_pred: Predicted rotation matrices (N, 3, 3) numpy array.
+        Rot_gt: Ground-truth rotation matrices (N, 3, 3) numpy array.
+        b_omega: Gyroscope bias estimates (N, 3) numpy array.
+        b_acc: Accelerometer bias estimates (N, 3) numpy array.
+        timestamps: Time values (N,). If None, uses sample indices.
+        seq_name: Sequence name for the title.
+
+    Returns:
+        matplotlib.Figure
+    """
+    from src.utils.geometry import to_rpy
+
+    N = Rot_pred.shape[0]
+    ang_pred = np.zeros((N, 3))
+    ang_gt = np.zeros((N, 3))
+    for i in range(N):
+        ang_pred[i] = to_rpy(Rot_pred[i])
+        ang_gt[i] = to_rpy(Rot_gt[i])
+
+    if timestamps is None:
+        timestamps = np.arange(N)
+
+    fig, axs = plt.subplots(3, 1, sharex=True, figsize=(14, 12))
+
+    # Orientation
+    labels = ["roll", "pitch", "yaw"]
+    colors_gt = ["b", "g", "r"]
+    colors_pred = ["c", "lime", "orange"]
+    for i in range(3):
+        axs[0].plot(
+            timestamps,
+            np.rad2deg(ang_gt[:, i]),
+            colors_gt[i],
+            label=f"{labels[i]} GT",
+        )
+        axs[0].plot(
+            timestamps,
+            np.rad2deg(ang_pred[:, i]),
+            colors_pred[i],
+            linestyle="--",
+            label=f"{labels[i]} pred",
+        )
+    axs[0].set_ylabel("Angle (deg)")
+    axs[0].set_title(
+        f"Orientation - {seq_name}" if seq_name else "Orientation"
+    )
+    axs[0].legend(ncol=3)
+    axs[0].grid(True)
+
+    # Gyro bias
+    for i, c in enumerate(["r", "g", "b"]):
+        axs[1].plot(timestamps, b_omega[:, i], c, label=f"axis {i}")
+    axs[1].set_ylabel(r"$b^{\omega}$ (rad/s)")
+    axs[1].set_title("Gyroscope Bias")
+    axs[1].legend()
+    axs[1].grid(True)
+
+    # Accelerometer bias
+    for i, c in enumerate(["r", "g", "b"]):
+        axs[2].plot(timestamps, b_acc[:, i], c, label=f"axis {i}")
+    axs[2].set_ylabel(r"$b^{a}$ (m/s²)")
+    axs[2].set_title("Accelerometer Bias")
+    axs[2].legend()
+    axs[2].grid(True)
+
+    axs[2].set_xlabel("Time (s)")
+    fig.tight_layout()
+    return fig
+
+
+def plot_imu_raw(u, timestamps=None, seq_name=""):
+    """
+    Plot raw gyroscope and accelerometer inputs.
+
+    Corresponds to legacy fig6.
+
+    Args:
+        u: Raw IMU measurements (N, 6) numpy array [gyro_xyz, acc_xyz].
+        timestamps: Time values (N,). If None, uses sample indices.
+        seq_name: Sequence name for the title.
+
+    Returns:
+        matplotlib.Figure
+    """
+    if timestamps is None:
+        timestamps = np.arange(u.shape[0])
+
+    fig, axs = plt.subplots(2, 1, sharex=True, figsize=(14, 8))
+
+    # Gyroscope
+    labels_gyro = [r"$\omega_x$", r"$\omega_y$", r"$\omega_z$"]
+    for i in range(3):
+        axs[0].plot(timestamps, u[:, i], alpha=0.8, label=labels_gyro[i])
+    axs[0].set_ylabel("Angular rate (rad/s)")
+    axs[0].set_title(f"Gyroscope - {seq_name}" if seq_name else "Gyroscope")
+    axs[0].legend()
+    axs[0].grid(True)
+
+    # Accelerometer
+    labels_acc = [r"$a_x$", r"$a_y$", r"$a_z$"]
+    for i in range(3):
+        axs[1].plot(timestamps, u[:, 3 + i], alpha=0.8, label=labels_acc[i])
+    axs[1].set_ylabel(r"Acceleration (m/s²)")
+    axs[1].set_title(
+        f"Accelerometer - {seq_name}" if seq_name else "Accelerometer"
+    )
+    axs[1].legend()
+    axs[1].grid(True)
+
+    axs[1].set_xlabel("Time (s)")
+    fig.tight_layout()
+    return fig
+
+
+def plot_detailed_errors(p_pred, p_gt, timestamps=None, seq_name=""):
+    """
+    Plot MATE, CATE, and RMSE error breakdowns over time.
+
+    Corresponds to legacy fig7: per-axis error decomposition.
+
+    Args:
+        p_pred: Predicted positions (N, 3) numpy array.
+        p_gt: Ground-truth positions (N, 3) numpy array.
+        timestamps: Time values (N,). If None, uses sample indices.
+        seq_name: Sequence name for the title.
+
+    Returns:
+        matplotlib.Figure
+    """
+    if timestamps is None:
+        timestamps = np.arange(p_pred.shape[0])
+
+    error_p = np.abs(p_gt - p_pred)
+
+    # MATE: Mean Absolute Trajectory Error (xy vs z)
+    mate_xy = np.mean(error_p[:, :2], axis=1)
+    mate_z = error_p[:, 2]
+
+    # CATE: Cumulative Absolute Trajectory Error
+    cate_xy = np.cumsum(mate_xy) / np.arange(1, len(mate_xy) + 1)
+    cate_z = np.cumsum(mate_z) / np.arange(1, len(mate_z) + 1)
+
+    # RMSE (per-sample)
+    rmse_xy = np.sqrt(0.5 * (error_p[:, 0] ** 2 + error_p[:, 1] ** 2))
+    rmse_z = error_p[:, 2]
+
+    fig, axs = plt.subplots(3, 1, sharex=True, figsize=(14, 12))
+
+    # MATE + RMSE
+    axs[0].plot(timestamps, mate_xy, label="MATE xy")
+    axs[0].plot(timestamps, mate_z, label="MATE z")
+    axs[0].plot(timestamps, rmse_xy, linestyle="--", label="RMSE xy")
+    axs[0].plot(timestamps, rmse_z, linestyle="--", label="RMSE z")
+    axs[0].set_ylabel("Error (m)")
+    axs[0].set_title(
+        f"MATE & RMSE - {seq_name}" if seq_name else "MATE & RMSE"
+    )
+    axs[0].legend()
+    axs[0].grid(True)
+
+    # CATE
+    axs[1].plot(timestamps, cate_xy, label="CATE xy")
+    axs[1].plot(timestamps, cate_z, label="CATE z")
+    axs[1].set_ylabel("Cumulative Avg Error (m)")
+    axs[1].set_title("Cumulative Absolute Trajectory Error (CATE)")
+    axs[1].legend()
+    axs[1].grid(True)
+
+    # Per-axis SE(3) position error
+    se3_error = p_gt - p_pred
+    axs[2].plot(timestamps, se3_error[:, 0], "r-", alpha=0.8, label="x")
+    axs[2].plot(timestamps, se3_error[:, 1], "g-", alpha=0.8, label="y")
+    axs[2].plot(timestamps, se3_error[:, 2], "b-", alpha=0.8, label="z")
+    axs[2].set_ylabel("Position Error (m)")
+    axs[2].set_title("Per-Axis Position Error")
+    axs[2].legend()
+    axs[2].grid(True)
+
+    axs[2].set_xlabel("Time (s)")
+    fig.tight_layout()
+    return fig
+
+
+def plot_body_frame_velocity(
+    v_pred, v_gt, Rot_pred, Rot_gt, timestamps=None, seq_name=""
+):
+    """
+    Plot velocity in body frame (R^T v) for predicted and ground truth.
+
+    Corresponds to legacy fig1 subplot 3.
+
+    Args:
+        v_pred: Predicted velocities (N, 3) numpy array (world frame).
+        v_gt: Ground-truth velocities (N, 3) numpy array (world frame).
+        Rot_pred: Predicted rotation matrices (N, 3, 3).
+        Rot_gt: Ground-truth rotation matrices (N, 3, 3).
+        timestamps: Time values (N,). If None, uses sample indices.
+        seq_name: Sequence name for the title.
+
+    Returns:
+        matplotlib.Figure
+    """
+    if timestamps is None:
+        timestamps = np.arange(v_pred.shape[0])
+
+    # Rotate to body frame: v_body = R^T @ v_world
+    v_body_pred = np.einsum("nij,nj->ni", Rot_pred.transpose(0, 2, 1), v_pred)
+    v_body_gt = np.einsum("nij,nj->ni", Rot_gt.transpose(0, 2, 1), v_gt)
+
+    fig, ax = plt.subplots(figsize=(14, 5))
+    labels = ["x", "y (lateral)", "z (vertical)"]
+    colors_gt = ["b", "g", "r"]
+    colors_pred = ["c", "lime", "orange"]
+
+    for i in range(3):
+        ax.plot(
+            timestamps,
+            v_body_gt[:, i],
+            colors_gt[i],
+            label=f"{labels[i]} GT",
+        )
+        ax.plot(
+            timestamps,
+            v_body_pred[:, i],
+            colors_pred[i],
+            linestyle="--",
+            label=f"{labels[i]} pred",
+        )
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Velocity (m/s)")
+    title = (
+        f"Body-Frame Velocity - {seq_name}"
+        if seq_name
+        else "Body-Frame Velocity"
+    )
+    ax.set_title(title)
+    ax.legend(ncol=3)
+    ax.grid(True)
+    fig.tight_layout()
+    return fig
+
+
+def plot_covariance_with_imu(
+    measurements_covs, u_normalized, timestamps=None, seq_name=""
+):
+    """
+    Plot measurement covariances alongside normalized IMU inputs.
+
+    Corresponds to legacy fig5 (all three subplots).
+
+    Args:
+        measurements_covs: Covariance values (N, D) numpy array.
+        u_normalized: Normalized IMU measurements (N, 6) numpy array.
+        timestamps: Time values (N,). If None, uses sample indices.
+        seq_name: Sequence name for the title.
+
+    Returns:
+        matplotlib.Figure
+    """
+    if timestamps is None:
+        timestamps = np.arange(measurements_covs.shape[0])
+
+    fig, axs = plt.subplots(3, 1, sharex=True, figsize=(14, 12))
+
+    # Measurement covariances (log scale)
+    log_covs = np.log10(np.clip(measurements_covs, 1e-10, None))
+    cov_labels = ["Lateral velocity", "Vertical velocity"]
+    for i in range(min(log_covs.shape[1], len(cov_labels))):
+        axs[0].plot(timestamps, log_covs[:, i], alpha=0.8, label=cov_labels[i])
+    for i in range(len(cov_labels), log_covs.shape[1]):
+        axs[0].plot(timestamps, log_covs[:, i], alpha=0.8, label=f"Cov {i}")
+    axs[0].set_ylabel("log10(covariance)")
+    axs[0].set_title(
+        f"Measurement Covariances - {seq_name}"
+        if seq_name
+        else "Measurement Covariances"
+    )
+    axs[0].legend()
+    axs[0].grid(True)
+
+    # Normalized gyro
+    gyro_labels = [r"$\omega_x$", r"$\omega_y$", r"$\omega_z$"]
+    for i in range(3):
+        axs[1].plot(
+            timestamps, u_normalized[:, i], alpha=0.8, label=gyro_labels[i]
+        )
+    axs[1].set_ylabel("Normalized value")
+    axs[1].set_title("Normalized Gyro Measurements")
+    axs[1].legend()
+    axs[1].grid(True)
+
+    # Normalized accelerometer
+    acc_labels = [r"$a_x$", r"$a_y$", r"$a_z$"]
+    for i in range(3):
+        axs[2].plot(
+            timestamps, u_normalized[:, 3 + i], alpha=0.8, label=acc_labels[i]
+        )
+    axs[2].set_ylabel("Normalized value")
+    axs[2].set_title("Normalized Accelerometer Measurements")
+    axs[2].legend()
+    axs[2].grid(True)
+
+    axs[2].set_xlabel("Time (s)")
+    fig.tight_layout()
+    return fig

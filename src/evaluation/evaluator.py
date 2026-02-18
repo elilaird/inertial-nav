@@ -160,9 +160,17 @@ def evaluate_sequence(iekf, dataset, dataset_name):
         "b_omega": b_omega,
         "b_acc": b_acc,
         "p_gt": p_gt_np,
+        "v_gt": v_gt.numpy() if isinstance(v_gt, torch.Tensor) else v_gt,
         "Rot_gt": Rot_gt,
         "p_imu": p_imu,
+        "v_imu": v_imu,
         "Rot_imu": Rot_imu,
+        "u": u_np,
+        "u_normalized": (
+            u_normalized.numpy()
+            if isinstance(u_normalized, torch.Tensor)
+            else u_normalized
+        ),
         "t": t_np,
         "measurements_covs": measurements_covs_np,
         "name": dataset_name,

@@ -33,6 +33,11 @@ from src.evaluation.visualization import (
     plot_trajectory_3d,
     plot_error_timeline,
     plot_covariance_timeline,
+    plot_orientation_and_biases,
+    plot_imu_raw,
+    plot_detailed_errors,
+    plot_body_frame_velocity,
+    plot_covariance_with_imu,
 )
 from src.data.kitti_dataset import KITTIDataset
 
@@ -167,6 +172,75 @@ def main(cfg: DictConfig):
                 os.path.join(results_dir, f"{dataset_name}_error.png"), dpi=150
             )
 
+            timestamps = results["t"] - results["t"][0]
+
+            # Orientation and bias plots
+            fig_orient = plot_orientation_and_biases(
+                results["Rot"],
+                results["Rot_gt"],
+                results["b_omega"],
+                results["b_acc"],
+                timestamps=timestamps,
+                seq_name=dataset_name,
+            )
+            fig_orient.savefig(
+                os.path.join(
+                    results_dir, f"{dataset_name}_orientation_bias.png"
+                ),
+                dpi=150,
+            )
+
+            # Raw IMU inputs
+            fig_imu = plot_imu_raw(
+                results["u"],
+                timestamps=timestamps,
+                seq_name=dataset_name,
+            )
+            fig_imu.savefig(
+                os.path.join(results_dir, f"{dataset_name}_imu_raw.png"),
+                dpi=150,
+            )
+
+            # Detailed error breakdown (MATE / CATE / RMSE)
+            fig_errors = plot_detailed_errors(
+                p,
+                p_gt,
+                timestamps=timestamps,
+                seq_name=dataset_name,
+            )
+            fig_errors.savefig(
+                os.path.join(
+                    results_dir, f"{dataset_name}_errors_detailed.png"
+                ),
+                dpi=150,
+            )
+
+            # Body-frame velocity
+            fig_vbody = plot_body_frame_velocity(
+                results["v"],
+                results["v_gt"],
+                results["Rot"],
+                results["Rot_gt"],
+                timestamps=timestamps,
+                seq_name=dataset_name,
+            )
+            fig_vbody.savefig(
+                os.path.join(results_dir, f"{dataset_name}_body_velocity.png"),
+                dpi=150,
+            )
+
+            # Covariance with normalized IMU overlay
+            fig_cov_imu = plot_covariance_with_imu(
+                results["measurements_covs"],
+                results["u_normalized"],
+                timestamps=timestamps,
+                seq_name=dataset_name,
+            )
+            fig_cov_imu.savefig(
+                os.path.join(results_dir, f"{dataset_name}_covs_with_imu.png"),
+                dpi=150,
+            )
+
             if use_wandb:
                 metrics = results["metrics"]
                 log_dict = {
@@ -179,6 +253,19 @@ def main(cfg: DictConfig):
                     f"test/{dataset_name}/trajectory_2d": wandb.Image(fig_2d),
                     f"test/{dataset_name}/error_timeline": wandb.Image(
                         fig_err
+                    ),
+                    f"test/{dataset_name}/orientation_bias": wandb.Image(
+                        fig_orient
+                    ),
+                    f"test/{dataset_name}/imu_raw": wandb.Image(fig_imu),
+                    f"test/{dataset_name}/errors_detailed": wandb.Image(
+                        fig_errors
+                    ),
+                    f"test/{dataset_name}/body_velocity": wandb.Image(
+                        fig_vbody
+                    ),
+                    f"test/{dataset_name}/covs_with_imu": wandb.Image(
+                        fig_cov_imu
                     ),
                 }
                 if "metrics_imu" in results:
