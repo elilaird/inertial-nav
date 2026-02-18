@@ -117,10 +117,15 @@ def main(cfg: DictConfig):
     # Optional WandB
     use_wandb = cfg.get("logging", {}).get("use_wandb", False)
     if use_wandb:
+        SLURM_JOB_ID = os.environ.get("SLURM_JOB_ID")
         wandb.init(
             project=cfg.get("logging", {}).get("project", "ai-imu-dr"),
             config=OmegaConf.to_container(cfg, resolve=True),
-            name=f"test-{cfg.get('experiment', {}).get('name', 'default')}",
+            name=(
+                f"test-{cfg.get('experiment', {}).get('name')}_{SLURM_JOB_ID}"
+                if SLURM_JOB_ID
+                else f"test-{cfg.get('experiment', {}).get('name')}"
+            ),
             job_type="test",
         )
 
