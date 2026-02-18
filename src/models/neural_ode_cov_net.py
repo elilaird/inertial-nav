@@ -36,7 +36,7 @@ class ODEFunc(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
             nn.Tanh(),
             nn.Linear(hidden_dim, hidden_dim),
-        ).double()
+        )
 
         # Initialize near-identity for stable training
         for m in self.net.modules():
@@ -90,7 +90,7 @@ class NeuralODEConvCovNet(BaseCovarianceNet):
 
         self.register_buffer(
             "beta_measurement",
-            initial_beta * torch.ones(output_dim).double(),
+            initial_beta * torch.ones(output_dim),
         )
 
         # Lightweight conv feature extractor
@@ -102,10 +102,10 @@ class NeuralODEConvCovNet(BaseCovarianceNet):
                 padding=kernel_size // 2,
             ),
             nn.ReLU(),
-        ).double()
+        )
 
         # Project conv features to ODE state
-        self.to_ode = nn.Linear(conv_channels, hidden_dim).double()
+        self.to_ode = nn.Linear(conv_channels, hidden_dim)
 
         # ODE dynamics
         self.ode_func = ODEFunc(hidden_dim)
@@ -114,7 +114,7 @@ class NeuralODEConvCovNet(BaseCovarianceNet):
         self.head = nn.Sequential(
             nn.Linear(hidden_dim, output_dim),
             nn.Tanh(),
-        ).double()
+        )
 
         # Small init for stable output
         self.head[0].weight.data *= 0.01
@@ -140,7 +140,7 @@ class NeuralODEConvCovNet(BaseCovarianceNet):
 
         # Run Neural ODE on each timestep's features
         t_span = torch.linspace(
-            0, 1, self.ode_steps, dtype=torch.float64, device=h.device
+            0, 1, self.ode_steps, dtype=torch.float32, device=h.device
         )
         h_evolved = odeint(self.ode_func, h, t_span, method=self.solver)
         h_out = h_evolved[-1]  # Take final state: (seq_len, hidden_dim)
@@ -201,7 +201,7 @@ class NeuralODELSTMCovNet(BaseCovarianceNet):
 
         self.register_buffer(
             "beta_measurement",
-            initial_beta * torch.ones(output_dim).double(),
+            initial_beta * torch.ones(output_dim),
         )
 
         # Lightweight LSTM feature extractor
@@ -210,10 +210,10 @@ class NeuralODELSTMCovNet(BaseCovarianceNet):
             hidden_size=lstm_hidden,
             num_layers=1,
             batch_first=True,
-        ).double()
+        )
 
         # Project LSTM output to ODE state
-        self.to_ode = nn.Linear(lstm_hidden, hidden_dim).double()
+        self.to_ode = nn.Linear(lstm_hidden, hidden_dim)
 
         # ODE dynamics
         self.ode_func = ODEFunc(hidden_dim)
@@ -222,7 +222,7 @@ class NeuralODELSTMCovNet(BaseCovarianceNet):
         self.head = nn.Sequential(
             nn.Linear(hidden_dim, output_dim),
             nn.Tanh(),
-        ).double()
+        )
 
         # Small init for stable output
         self.head[0].weight.data *= 0.01
@@ -250,7 +250,7 @@ class NeuralODELSTMCovNet(BaseCovarianceNet):
 
         # Run Neural ODE
         t_span = torch.linspace(
-            0, 1, self.ode_steps, dtype=torch.float64, device=h.device
+            0, 1, self.ode_steps, dtype=torch.float32, device=h.device
         )
         h_evolved = odeint(self.ode_func, h, t_span, method=self.solver)
         h_out = h_evolved[-1]  # (seq_len, hidden_dim)

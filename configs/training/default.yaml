@@ -22,7 +22,7 @@ steps_per_epoch: null
 # Set enabled: false to use the standard (full-sequence) mode.
 bptt:
     enabled: true
-    chunk_size: 500 # timesteps per chunk (500 = 5 s at 100 Hz)
+    chunk_size: 2000 # timesteps per chunk (500 = 5 s at 100 Hz)
 
 # Gradient clipping
 gradient_clipping:
