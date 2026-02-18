@@ -24,6 +24,7 @@ from omegaconf import DictConfig, OmegaConf
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
+from src.utils.io import seed_normalize_factors
 
 from src.core.torch_iekf import TorchIEKF
 from src.evaluation.evaluator import evaluate_sequence, format_metrics
@@ -96,11 +97,22 @@ def main(cfg: DictConfig):
 
     # Build dataset
     paths_cfg = cfg.get("paths", {})
+    seed_normalize_factors(paths_cfg)
     dataset_cfg = OmegaConf.to_container(cfg.get("dataset", {}), resolve=True)
     dataset_cfg["path_data_save"] = paths_cfg.get("data", "../data")
     dataset_cfg["path_results"] = paths_cfg.get("results", "../results")
     dataset_cfg["path_temp"] = paths_cfg.get("temp", "../temp")
     dataset = KITTIDataset(dataset_cfg, split="test")
+
+    # Load normalization statistics into the model so networks receive
+    # normalized IMU input. Must be called after dataset is built (which
+    # loads normalize_factors.p from paths.temp) and after iekf.float().
+    if dataset.normalize_factors is None:
+        raise RuntimeError(
+            f"normalize_factors.p not found in {dataset_cfg['path_temp']}. "
+            "Run data preparation (read_data=1) first to generate it."
+        )
+    iekf.get_normalize_u(dataset)
 
     # Optional WandB
     use_wandb = cfg.get("logging", {}).get("use_wandb", False)

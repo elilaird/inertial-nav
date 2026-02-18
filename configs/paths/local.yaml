@@ -11,7 +11,11 @@ data_save: "/lustre/smuexa01/client/users/ejlaird/kitti"
 results: "${hydra:run.dir}/results"
 
 # Temporary files and checkpoints during training
-temp: "${hydra:run.dir}/temp"
+temp: "temp"
+
+# Shared temp dir containing pre-computed normalize_factors.p
+# This file is copied into each run's own temp dir at startup.
+base_temp: "/lustre/smuexa01/client/users/ejlaird/inertial_nav/temp"
 
 # Model checkpoints
 checkpoints: ${hydra:run.dir}/checkpoints

@@ -16,11 +16,13 @@ import sys
 import hydra
 from omegaconf import DictConfig, OmegaConf
 
+
 # Ensure the project root is on sys.path so 'src' is importable
 # even after Hydra changes the working directory.
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
+from src.utils.io import seed_normalize_factors
 
 
 @hydra.main(config_path="../configs", config_name="config", version_base=None)
@@ -33,6 +35,7 @@ def main(cfg: DictConfig):
 
     # Build dataset
     paths_cfg = cfg.get("paths")
+    seed_normalize_factors(paths_cfg)
     dataset_cfg = OmegaConf.to_container(cfg.get("dataset"), resolve=True)
     dataset_cfg["path_data_save"] = paths_cfg.get("data")
     dataset_cfg["path_results"] = paths_cfg.get("results")

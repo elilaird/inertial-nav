@@ -12,8 +12,8 @@ CONDA_ENV=${CONDA_ENV:-nav}
 NODES=${NODES:-1}
 
 GPU=${GPU:-1}
-CPUS=${CPUS:-16}
-MEM=${MEM:-16G}
+CPUS=${CPUS:-32}
+MEM=${MEM:-64G}
 PY_ARGS="${@}"
 BRANCH=${BRANCH:-main}
 
