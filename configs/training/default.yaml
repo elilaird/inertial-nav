@@ -21,7 +21,7 @@ steps_per_epoch: null
 # at chunk boundaries to limit gradient graph depth.
 # Set enabled: false to use the standard (full-sequence) mode.
 bptt:
-    enabled: false
+    enabled: true
     chunk_size: 500 # timesteps per chunk (500 = 5 s at 100 Hz)
 
 # Gradient clipping
@@ -32,17 +32,17 @@ gradient_clipping:
 # Validation
 validation:
     enabled: true
-    interval: 1 # Validate every N epochs
+    interval: 10 # Validate every N epochs
     save_best: true # Save checkpoint when validation improves
     # Run full filter evaluation on val sequences during training
     test_eval:
         enabled: true
-        interval: 2 # Evaluate every N epochs
+        interval: 10 # Evaluate every N epochs
 
 # Checkpointing
 checkpointing:
     enabled: true
-    save_interval: 1 # Save checkpoint every N epochs
+    save_interval: 10 # Save checkpoint every N epochs
     keep_last_n: 5 # Keep only last N checkpoints
     save_best: true # Always keep best checkpoint
 
