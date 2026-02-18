@@ -117,7 +117,7 @@ class TorchIEKF(torch.nn.Module):
         # Optional neural network components
         self.initprocesscov_net = None
         self.mes_net = None
-        self.dynamics_net = None
+        self.bias_correction_net = None
 
     def _copy_scalar_params(self, params):
         """Copy non-tensor, non-callable attributes from *params* to self."""
@@ -193,13 +193,13 @@ class TorchIEKF(torch.nn.Module):
         _DEFAULT_TYPES = {
             "init_process_cov": "InitProcessCovNet",
             "measurement_cov": "MeasurementCovNet",
-            "dynamics": "NeuralODEDynamics",
+            "bias_correction": "LearnedBiasCorrectionNet",
         }
 
         for key, attr in [
             ("init_process_cov", "initprocesscov_net"),
             ("measurement_cov", "mes_net"),
-            ("dynamics", "dynamics_net"),
+            ("bias_correction", "bias_correction_net"),
         ]:
             net_cfg = networks_cfg.get(key, {})
             if net_cfg.get("enabled", False):
@@ -244,7 +244,17 @@ class TorchIEKF(torch.nn.Module):
     # Filter loop
     # ------------------------------------------------------------------
 
-    def run(self, t, u, measurements_covs, v_mes, p_mes, N, ang0):
+    def run(
+        self,
+        t,
+        u,
+        measurements_covs,
+        v_mes,
+        p_mes,
+        N,
+        ang0,
+        bias_corrections=None,
+    ):
         """
         Run the filter on a sequence of IMU measurements.
 
@@ -256,6 +266,8 @@ class TorchIEKF(torch.nn.Module):
             p_mes: Ground truth positions (N, 3) - PyTorch tensor
             N: Number of timesteps (None = all)
             ang0: Initial orientation [roll, pitch, yaw] (3,)
+            bias_corrections: Optional per-timestep accelerometer bias
+                corrections (N, 3) from LearnedBiasCorrectionNet.
 
         Returns:
             Tuple of (Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i)
@@ -269,6 +281,9 @@ class TorchIEKF(torch.nn.Module):
         )
 
         for i in range(1, N):
+            bc_i = (
+                bias_corrections[i] if bias_corrections is not None else None
+            )
             Rot_i, v_i, p_i, b_omega_i, b_acc_i, Rot_c_i_i, t_c_i_i, P_i = (
                 self.propagate(
                     Rot[i - 1],
@@ -281,6 +296,7 @@ class TorchIEKF(torch.nn.Module):
                     P,
                     u[i],
                     dt[i - 1],
+                    bias_correction=bc_i,
                 )
             )
 
@@ -349,7 +365,14 @@ class TorchIEKF(torch.nn.Module):
         """Detach all state tensors from the autograd graph (for BPTT)."""
         return {k: v.detach() for k, v in state.items()}
 
-    def run_chunk(self, state, t_chunk, u_chunk, measurements_covs_chunk):
+    def run_chunk(
+        self,
+        state,
+        t_chunk,
+        u_chunk,
+        measurements_covs_chunk,
+        bias_corrections_chunk=None,
+    ):
         """
         Run the filter for one chunk of timesteps, starting from ``state``.
 
@@ -361,6 +384,8 @@ class TorchIEKF(torch.nn.Module):
             t_chunk:             Timestamps for this chunk (K,).
             u_chunk:             IMU measurements for this chunk (K, 6).
             measurements_covs_chunk: Measurement covariances for this chunk (K, 2).
+            bias_corrections_chunk: Optional per-timestep accelerometer bias
+                corrections (K, 3) from LearnedBiasCorrectionNet.
 
         Returns:
             traj:       Tuple (Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i),
@@ -391,6 +416,11 @@ class TorchIEKF(torch.nn.Module):
         P = state["P"]
 
         for i in range(1, K):
+            bc_i = (
+                bias_corrections_chunk[i]
+                if bias_corrections_chunk is not None
+                else None
+            )
             Rot_i, v_i, p_i, b_omega_i, b_acc_i, Rot_c_i_i, t_c_i_i, P_i = (
                 self.propagate(
                     Rot[i - 1],
@@ -403,6 +433,7 @@ class TorchIEKF(torch.nn.Module):
                     P,
                     u_chunk[i],
                     dt_chunk[i - 1],
+                    bias_correction=bc_i,
                 )
             )
             (
@@ -495,26 +526,27 @@ class TorchIEKF(torch.nn.Module):
         P_prev,
         u,
         dt,
+        bias_correction=None,
     ):
         """
-        Propagate state forward one timestep.
+        Propagate state forward one timestep using classical inertial
+        kinematics, optionally with a learned accelerometer bias
+        correction Δb_acc(t).
 
-        If dynamics_net is set, uses learned dynamics for velocity/position.
-        Otherwise uses classical inertial kinematics.
+        Args:
+            bias_correction: Optional (3,) tensor — additive correction to
+                the accelerometer bias for this timestep, predicted by
+                LearnedBiasCorrectionNet.
         """
         Rot_prev = Rot_prev.clone()
 
-        if self.dynamics_net is not None:
-            # Learned dynamics for velocity and position
-            v, p = self.dynamics_net(
-                v_prev, p_prev, Rot_prev, u, b_acc_prev, self.g, dt
-            )
-        else:
-            # Classical inertial kinematics
-            acc_b = u[3:6] - b_acc_prev
-            acc = Rot_prev.mv(acc_b) + self.g
-            v = v_prev + acc * dt
-            p = p_prev + v_prev.clone() * dt + 0.5 * acc * dt**2
+        # Classical inertial kinematics
+        acc_b = u[3:6] - b_acc_prev
+        if bias_correction is not None:
+            acc_b = acc_b - bias_correction
+        acc = Rot_prev.mv(acc_b) + self.g
+        v = v_prev + acc * dt
+        p = p_prev + v_prev.clone() * dt + 0.5 * acc * dt**2
 
         # Rotation always uses classical SO(3) integration
         omega = (u[:3] - b_omega_prev) * dt
@@ -846,6 +878,24 @@ class TorchIEKF(torch.nn.Module):
         u_n = u_n[:, :6]
         measurements_covs = self.mes_net(u_n, self)
         return measurements_covs
+
+    def forward_bias_net(self, u):
+        """
+        Predict per-timestep accelerometer bias corrections.
+
+        Args:
+            u: IMU measurements (N, 6), raw (not normalized).
+
+        Returns:
+            Bias corrections (N, 3) in m/s², or None if no
+            bias_correction_net is attached.
+        """
+        if self.bias_correction_net is None:
+            return None
+
+        u_n = self.normalize_u(u).t().unsqueeze(0)
+        u_n = u_n[:, :6]
+        return self.bias_correction_net(u_n, self)
 
     def set_Q(self):
         """

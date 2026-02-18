@@ -12,7 +12,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 
 # Install dependencies
-pip install torch matplotlib numpy scipy termcolor navpy hydra-core omegaconf wandb torchdiffeq
+pip install torch matplotlib numpy scipy termcolor navpy hydra-core omegaconf wandb
 ```
 
 ## Data Setup
@@ -81,7 +81,7 @@ python src/train.py training.epochs=100
 python src/train.py logging.use_wandb=false
 
 # Use a different model architecture
-python src/train.py model=iekf_node_conv_cov
+python src/train.py model=iekf_learned_dynamics
 
 # Change learning rate for a specific component
 python src/train.py optimizer.param_groups.init_process_cov_net.lr=1e-5
@@ -93,7 +93,7 @@ python src/train.py loss=ate
 python src/train.py training.seq_dim=3000
 
 # Combine overrides
-python src/train.py training.epochs=50 model=iekf_node_lstm_cov logging.use_wandb=false
+python src/train.py training.epochs=50 model=iekf_learned_dynamics logging.use_wandb=false
 ```
 
 ### Resume Training
@@ -187,9 +187,7 @@ The system is modular: the IEKF filter is fixed, but the neural networks that pr
 | Config | Measurement Cov Net | Notes |
 |--------|-------------------|-------|
 | `iekf_learned_cov` | MeasurementCovNet (CNN) | Default. Matches the original paper. |
-| `iekf_node_conv_cov` | NeuralODEConvCovNet | Neural ODE with conv backbone (~3.5K params) |
-| `iekf_node_lstm_cov` | NeuralODELSTMCovNet | Neural ODE with LSTM backbone (~4K params) |
-| `iekf_learned_dynamics` | MeasurementCovNet + NeuralODEDynamics | Also replaces classical inertial kinematics with a learned model |
+| `iekf_learned_dynamics` | MeasurementCovNet + LearnedBiasCorrectionNet | Adds learned per-timestep accelerometer bias corrections |
 
 All models also include an **InitProcessCovNet** that learns initial state and process noise covariances.
 
@@ -264,8 +262,6 @@ configs/
     kitti.yaml             # Sequence definitions, train/val/test splits, noise params
   model/
     iekf_learned_cov.yaml  # Default model: physics params, network architectures
-    iekf_node_conv_cov.yaml
-    iekf_node_lstm_cov.yaml
     iekf_learned_dynamics.yaml
   training/
     default.yaml           # Epochs, seq_dim, gradient clipping, checkpointing, seed
@@ -304,8 +300,7 @@ src/
     base_covariance_net.py
     init_process_cov_net.py
     measurement_cov_net.py
-    neural_ode_cov_net.py
-    neural_ode_dynamics.py
+    learned_bias_correction_net.py
   data/                # Data loading and transforms
     base_dataset.py
     kitti_dataset.py

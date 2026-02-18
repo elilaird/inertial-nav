@@ -133,15 +133,13 @@ class Trainer:
             )
 
         # WandB logging
-        if self.logging_cfg.get("use_wandb", False):
+        if self.logging_cfg.get("use_wandb", True):
             wandb_cfg = self.logging_cfg.get("wandb", {})
             cb_list.add(WandBLogger(wandb_cfg, model=self.model))
 
         # Test evaluation during training
-        test_eval_cfg = self.training_cfg.get("validation", {}).get(
-            "test_eval", {}
-        )
-        if test_eval_cfg.get("enabled", False):
+        test_eval_cfg = self.training_cfg.get("validation").get("test_eval")
+        if test_eval_cfg.get("enabled", True):
             cb_list.add(
                 TestEvalCallback(
                     dataset=self.dataset,
@@ -515,10 +513,15 @@ class Trainer:
 
             # CNN runs on chunk only — gradient stays within this backward call
             meas_c = self.model.forward_nets(u[cs:ce])
+            bc_c = self.model.forward_bias_net(u[cs:ce])
 
             # Filter forward for chunk_size timesteps
             traj, new_state = self.model.run_chunk(
-                state, t[cs:ce], u[cs:ce], meas_c
+                state,
+                t[cs:ce],
+                u[cs:ce],
+                meas_c,
+                bias_corrections_chunk=bc_c,
             )
             Rot_c, _, p_c, *_ = traj
 
@@ -624,10 +627,18 @@ class Trainer:
 
         # Forward pass through networks
         measurements_covs = self.model.forward_nets(u)
+        bias_corrections = self.model.forward_bias_net(u)
 
         # Run filter
         Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i = self.model.run(
-            t, u, measurements_covs, v_gt, p_gt, t.shape[0], ang_gt[0]
+            t,
+            u,
+            measurements_covs,
+            v_gt,
+            p_gt,
+            t.shape[0],
+            ang_gt[0],
+            bias_corrections=bias_corrections,
         )
 
         # Compute loss

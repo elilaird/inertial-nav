@@ -5,7 +5,7 @@ Main training entry point using Hydra configuration.
 Usage:
     python src/train.py                              # Default config
     python src/train.py training.epochs=100          # Override epochs
-    python src/train.py model=iekf_node_conv_cov     # Different model
+    python src/train.py model=iekf_learned_dynamics  # Different model
     python src/train.py logging.use_wandb=false      # Disable WandB
     python src/train.py training.debug.fast_dev_run=true  # Quick test
 """

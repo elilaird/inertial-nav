@@ -104,10 +104,18 @@ def evaluate_sequence(iekf, dataset, dataset_name):
     iekf.eval()
     with torch.no_grad():
         measurements_covs = iekf.forward_nets(u_normalized)
+        bias_corrections = iekf.forward_bias_net(u_normalized)
 
         N = len(t)
         Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i = iekf.run(
-            t, u, measurements_covs, v_gt, p_gt, N, ang_gt[0]
+            t,
+            u,
+            measurements_covs,
+            v_gt,
+            p_gt,
+            N,
+            ang_gt[0],
+            bias_corrections=bias_corrections,
         )
 
     # ---- numpy conversion ----

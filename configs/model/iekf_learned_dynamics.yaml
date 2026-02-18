@@ -1,5 +1,6 @@
-# IEKF with learned Neural ODE dynamics + learned measurement covariance
-# Replaces classical inertial kinematics with learned v/p dynamics
+# IEKF with learned bias correction + learned measurement covariance
+# Replaces classical bias model with learned per-timestep accelerometer
+# bias corrections from a causal 1D CNN, while keeping exact SE(3) kinematics.
 
 name: "iekf_learned_dynamics"
 
@@ -22,17 +23,22 @@ networks:
     architecture:
       input_channels: 6
       output_dim: 2
-      cnn_channels: [32, 32]
+      cnn_channels: 32
       kernel_size: 5
-      dilation: [1, 3]
+      dilation: 3
       dropout: 0.5
       initial_beta: 3.0
 
-  dynamics:
+  bias_correction:
     enabled: true
-    type: "NeuralODEDynamics"
+    type: "LearnedBiasCorrectionNet"
     architecture:
-      imu_dim: 6
-      hidden_dim: 32
-      solver: "euler"
-      use_classical_residual: true
+      input_channels: 6
+      output_dim: 3
+      max_correction: 0.5  # m/s², physical bound
+      cnn_channels: 32
+      kernel_size: 5
+      dilation: 3
+      dropout: 0.5
+      weight_scale: 0.01
+      bias_scale: 0.01

@@ -9,7 +9,7 @@ logging, and early stopping.
 import os
 import torch
 from termcolor import cprint
-
+import wandb
 
 class Callback:
     """Base callback with no-op hooks."""
@@ -156,11 +156,6 @@ class WandBLogger(Callback):
         self._gradient_log_freq = cfg.get("log_freq", {}).get("gradient", 100)
 
     def on_train_start(self, trainer):
-        try:
-            import wandb
-        except ImportError:
-            cprint("wandb not installed, skipping WandB logging", "yellow")
-            return
 
         SLURM_JOB_ID = os.environ.get("SLURM_JOB_ID", "local")
         self.run = wandb.init(
@@ -180,14 +175,12 @@ class WandBLogger(Callback):
 
     def on_train_end(self, trainer):
         if self.run is not None:
-            import wandb
-
             wandb.finish()
 
     def on_epoch_end(self, trainer, epoch, metrics):
         if self.run is None:
             return
-        import wandb
+        
 
         log_dict = {k: v for k, v in metrics.items()}
         log_dict["epoch"] = epoch
@@ -198,7 +191,7 @@ class WandBLogger(Callback):
             return
         if batch_idx % self._batch_log_freq != 0:
             return
-        import wandb
+        
 
         wandb.log(metrics)
 
@@ -265,7 +258,7 @@ class TestEvalCallback(Callback):
 
                 # Generate validation plots for WandB
                 try:
-                    import wandb
+                    
 
                     timestamps = results["t"] - results["t"][0]
                     p_imu = results.get("p_imu")

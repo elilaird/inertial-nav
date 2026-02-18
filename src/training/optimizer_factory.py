@@ -15,7 +15,7 @@ def build_optimizer(cfg, model):
 
     Supports per-component learning rates: the config can specify
     different lr/weight_decay for init_process_cov_net, measurement_cov_net
-    sub-modules, and dynamics_net.
+    sub-modules, and bias_correction_net.
 
     Args:
         cfg: Optimizer config (from configs/optimizer/*.yaml)
@@ -28,7 +28,7 @@ def build_optimizer(cfg, model):
 
     if not param_groups:
         # Fallback: optimize all parameters with a single group
-        param_groups = [{'params': model.parameters(), 'lr': 1e-4}]
+        param_groups = [{"params": model.parameters(), "lr": 1e-4}]
 
     optimizer_type = cfg.get("type", "Adam")
     if optimizer_type == "Adam":
@@ -53,11 +53,13 @@ def _build_param_groups(cfg, model):
     # InitProcessCovNet
     ipc_cfg = groups_cfg.get("init_process_cov_net", None)
     if ipc_cfg and model.initprocesscov_net is not None:
-        param_groups.append({
-            'params': model.initprocesscov_net.parameters(),
-            'lr': ipc_cfg.get("lr", 1e-4),
-            'weight_decay': ipc_cfg.get("weight_decay", 0.0),
-        })
+        param_groups.append(
+            {
+                "params": model.initprocesscov_net.parameters(),
+                "lr": ipc_cfg.get("lr", 1e-4),
+                "weight_decay": ipc_cfg.get("weight_decay", 0.0),
+            }
+        )
 
     # MeasurementCovNet — supports sub-module groups (cov_net, cov_lin)
     mes_cfg = groups_cfg.get("measurement_cov_net", None)
@@ -66,27 +68,35 @@ def _build_param_groups(cfg, model):
             # Per-submodule learning rates
             for sub_name, sub_cfg in mes_cfg.items():
                 if hasattr(model.mes_net, sub_name):
-                    param_groups.append({
-                        'params': getattr(model.mes_net, sub_name).parameters(),
-                        'lr': sub_cfg.get("lr", 1e-4),
-                        'weight_decay': sub_cfg.get("weight_decay", 0.0),
-                    })
+                    param_groups.append(
+                        {
+                            "params": getattr(
+                                model.mes_net, sub_name
+                            ).parameters(),
+                            "lr": sub_cfg.get("lr", 1e-4),
+                            "weight_decay": sub_cfg.get("weight_decay", 0.0),
+                        }
+                    )
         else:
             # Single group for entire mes_net
-            param_groups.append({
-                'params': model.mes_net.parameters(),
-                'lr': mes_cfg.get("lr", 1e-4),
-                'weight_decay': mes_cfg.get("weight_decay", 0.0),
-            })
+            param_groups.append(
+                {
+                    "params": model.mes_net.parameters(),
+                    "lr": mes_cfg.get("lr", 1e-4),
+                    "weight_decay": mes_cfg.get("weight_decay", 0.0),
+                }
+            )
 
-    # DynamicsNet
-    dyn_cfg = groups_cfg.get("dynamics_net", None)
-    if dyn_cfg and model.dynamics_net is not None:
-        param_groups.append({
-            'params': model.dynamics_net.parameters(),
-            'lr': dyn_cfg.get("lr", 1e-4),
-            'weight_decay': dyn_cfg.get("weight_decay", 0.0),
-        })
+    # BiasCorrection net
+    bc_cfg = groups_cfg.get("bias_correction_net", None)
+    if bc_cfg and model.bias_correction_net is not None:
+        param_groups.append(
+            {
+                "params": model.bias_correction_net.parameters(),
+                "lr": bc_cfg.get("lr", 1e-4),
+                "weight_decay": bc_cfg.get("weight_decay", 0.0),
+            }
+        )
 
     return param_groups
 
@@ -94,7 +104,7 @@ def _build_param_groups(cfg, model):
 def _has_nested_lr(cfg):
     """Check if config has nested sub-module configs (dicts with 'lr' keys)."""
     for v in cfg.values():
-        if isinstance(v, dict) and 'lr' in v:
+        if isinstance(v, dict) and "lr" in v:
             return True
     return False
 
