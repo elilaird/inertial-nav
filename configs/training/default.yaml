@@ -29,20 +29,21 @@ gradient_clipping:
     enabled: true
     max_norm: 1.0
 
+save_interval: 10
 # Validation
 validation:
     enabled: true
-    interval: 10 # Validate every N epochs
+    interval: ${training.save_interval} # Validate every N epochs
     save_best: true # Save checkpoint when validation improves
     # Run full filter evaluation on val sequences during training
     test_eval:
         enabled: true
-        interval: 10 # Evaluate every N epochs
+        interval: ${training.save_interval} # Evaluate every N epochs
 
 # Checkpointing
 checkpointing:
     enabled: true
-    save_interval: 10 # Save checkpoint every N epochs
+    save_interval: ${training.save_interval} # Save checkpoint every N epochs
     keep_last_n: 5 # Keep only last N checkpoints
     save_best: true # Always keep best checkpoint
 
@@ -56,7 +57,7 @@ resume:
 debug:
     fast_dev_run: false # Run 1 batch per epoch for testing
     overfit_batches: 0 # If > 0, overfit on N batches
-    log_frequency: 10 # Log every N batches
+    log_frequency: ${training.save_interval} # Log every N batches
 
 # Random seed for reproducibility
 seed: 42

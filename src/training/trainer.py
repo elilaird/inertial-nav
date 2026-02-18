@@ -132,11 +132,6 @@ class Trainer:
                 )
             )
 
-        # WandB logging
-        if self.logging_cfg.get("use_wandb", True):
-            wandb_cfg = self.logging_cfg.get("wandb", {})
-            cb_list.add(WandBLogger(wandb_cfg, model=self.model))
-
         # Test evaluation during training
         test_eval_cfg = self.training_cfg.get("validation").get("test_eval")
         if test_eval_cfg.get("enabled", True):
@@ -146,6 +141,11 @@ class Trainer:
                     interval=test_eval_cfg.get("interval", 5),
                 )
             )
+
+        # WandB logging
+        if self.logging_cfg.get("use_wandb", True):
+            wandb_cfg = self.logging_cfg.get("wandb", {})
+            cb_list.add(WandBLogger(wandb_cfg, model=self.model))
 
         # Early stopping
         es_cfg = self.training_cfg.get("early_stopping", {})

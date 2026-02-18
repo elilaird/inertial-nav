@@ -101,10 +101,23 @@ def evaluate_sequence(iekf, dataset, dataset_name):
     # Normalize IMU for neural networks
     u_normalized = dataset.normalize(u)
 
+    # Determine model device and move all inputs there
+    device = next(iekf.parameters()).device
+    t = t.float().to(device)
+    ang_gt = ang_gt.float().to(device)
+    p_gt = p_gt.float().to(device)
+    v_gt = v_gt.float().to(device)
+    u = u.float().to(device)
+    u_normalized = (
+        u_normalized.float().to(device)
+        if isinstance(u_normalized, torch.Tensor)
+        else torch.tensor(u_normalized, dtype=torch.float32, device=device)
+    )
+
     iekf.eval()
     with torch.no_grad():
-        measurements_covs = iekf.forward_nets(u_normalized)
-        bias_corrections = iekf.forward_bias_net(u_normalized)
+        measurements_covs = iekf.forward_nets(u)
+        bias_corrections = iekf.forward_bias_net(u)
 
         N = len(t)
         Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i = iekf.run(
@@ -125,9 +138,9 @@ def evaluate_sequence(iekf, dataset, dataset_name):
     b_omega = b_omega.cpu().numpy()
     b_acc = b_acc.cpu().numpy()
 
-    p_gt_np = (p_gt - p_gt[0]).numpy()
-    ang_gt_np = ang_gt.numpy()
-    t_np = t.numpy()
+    p_gt_np = (p_gt - p_gt[0]).cpu().numpy()
+    ang_gt_np = ang_gt.cpu().numpy()
+    t_np = t.cpu().numpy()
     measurements_covs_np = measurements_covs.cpu().numpy()
 
     # Build ground-truth rotation matrices
@@ -142,8 +155,10 @@ def evaluate_sequence(iekf, dataset, dataset_name):
     orient_err = compute_orientation_error(Rot, Rot_gt)
 
     # ---- IMU direct integration baseline ----
-    u_np = u.numpy() if isinstance(u, torch.Tensor) else u
-    v0_np = v_gt[0].numpy() if isinstance(v_gt, torch.Tensor) else v_gt[0]
+    u_np = u.cpu().numpy() if isinstance(u, torch.Tensor) else u
+    v0_np = (
+        v_gt[0].cpu().numpy() if isinstance(v_gt, torch.Tensor) else v_gt[0]
+    )
     ang0_np = ang_gt_np[0]
     Rot_imu, p_imu, v_imu = imu_dead_reckoning(t_np, u_np, ang0_np, v0_np)
 
@@ -168,14 +183,14 @@ def evaluate_sequence(iekf, dataset, dataset_name):
         "b_omega": b_omega,
         "b_acc": b_acc,
         "p_gt": p_gt_np,
-        "v_gt": v_gt.numpy() if isinstance(v_gt, torch.Tensor) else v_gt,
+        "v_gt": v_gt.cpu().numpy() if isinstance(v_gt, torch.Tensor) else v_gt,
         "Rot_gt": Rot_gt,
         "p_imu": p_imu,
         "v_imu": v_imu,
         "Rot_imu": Rot_imu,
         "u": u_np,
         "u_normalized": (
-            u_normalized.numpy()
+            u_normalized.cpu().numpy()
             if isinstance(u_normalized, torch.Tensor)
             else u_normalized
         ),
