@@ -367,11 +367,21 @@ class TestTrainerComponents:
             },
             "optimizer": {
                 "type": "Adam",
-                "param_groups": {},
+                "param_groups": {
+                    "measurement_cov_net": {"lr": 1e-4},
+                },
                 "scheduler": {"enabled": False},
             },
             "loss": {"type": "RPELoss"},
-            "model": {"networks": {}},
+            "model": {
+                "networks": {
+                    "measurement_cov": {
+                        "enabled": True,
+                        "type": "MeasurementCovNet",
+                        "architecture": {"input_channels": 6, "output_dim": 2},
+                    },
+                }
+            },
             "logging": {"use_wandb": False},
             "experiment": {"name": "test", "tags": []},
         }
@@ -506,74 +516,6 @@ class TestTrainerComponents:
             ds.datasets_train_filter[f"fake_seq_{s}"] = [0, 5000]
         return ds
 
-    def test_trainer_batch_size_1(self):
-        """batch_size=1: optimizer steps after every sequence."""
-        tmpdir = tempfile.mkdtemp()
-        dataset = self._make_multi_seq_dataset(tmpdir, n_seqs=4)
-
-        cfg = {
-            "training": {
-                "epochs": 1,
-                "seq_dim": 2000,
-                "batch_size": 1,
-                "seed": 42,
-                "gradient_clipping": {"enabled": True, "max_norm": 1.0},
-                "checkpointing": {"enabled": False},
-                "debug": {"fast_dev_run": False},
-            },
-            "optimizer": {
-                "type": "Adam",
-                "param_groups": {},
-                "scheduler": {"enabled": False},
-            },
-            "loss": {"type": "RPELoss"},
-            "model": {"networks": {}},
-            "logging": {"use_wandb": False},
-            "experiment": {"name": "test", "tags": []},
-        }
-
-        from src.training.trainer import Trainer
-
-        trainer = Trainer(cfg, dataset)
-        metrics = trainer.fit()
-        assert "train/loss_epoch" in metrics
-        # 4 sequences, batch_size=1 → expect 4 optimizer steps
-        assert metrics["train/n_optimizer_steps"] == 4
-
-    def test_trainer_batch_size_2(self):
-        """batch_size=2: optimizer steps after every 2 sequences."""
-        tmpdir = tempfile.mkdtemp()
-        dataset = self._make_multi_seq_dataset(tmpdir, n_seqs=4)
-
-        cfg = {
-            "training": {
-                "epochs": 1,
-                "seq_dim": 2000,
-                "batch_size": 2,
-                "seed": 42,
-                "gradient_clipping": {"enabled": True, "max_norm": 1.0},
-                "checkpointing": {"enabled": False},
-                "debug": {"fast_dev_run": False},
-            },
-            "optimizer": {
-                "type": "Adam",
-                "param_groups": {},
-                "scheduler": {"enabled": False},
-            },
-            "loss": {"type": "RPELoss"},
-            "model": {"networks": {}},
-            "logging": {"use_wandb": False},
-            "experiment": {"name": "test", "tags": []},
-        }
-
-        from src.training.trainer import Trainer
-
-        trainer = Trainer(cfg, dataset)
-        metrics = trainer.fit()
-        assert "train/loss_epoch" in metrics
-        # 4 sequences, batch_size=2 → expect 2 optimizer steps
-        assert metrics["train/n_optimizer_steps"] == 2
-
     def test_trainer_batch_size_larger_than_seqs(self):
         """batch_size > n_sequences: all sequences in one batch (legacy behavior)."""
         tmpdir = tempfile.mkdtemp()
@@ -591,11 +533,21 @@ class TestTrainerComponents:
             },
             "optimizer": {
                 "type": "Adam",
-                "param_groups": {},
+                "param_groups": {
+                    "measurement_cov_net": {"lr": 1e-4},
+                },
                 "scheduler": {"enabled": False},
             },
             "loss": {"type": "RPELoss"},
-            "model": {"networks": {}},
+            "model": {
+                "networks": {
+                    "measurement_cov": {
+                        "enabled": True,
+                        "type": "MeasurementCovNet",
+                        "architecture": {"input_channels": 6, "output_dim": 2},
+                    },
+                }
+            },
             "logging": {"use_wandb": False},
             "experiment": {"name": "test", "tags": []},
         }

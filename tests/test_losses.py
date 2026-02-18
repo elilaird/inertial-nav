@@ -45,28 +45,28 @@ def make_straight_trajectory(N=5000, dt=0.01):
     """Create a straight-line trajectory for testing."""
     # Moving at 10 m/s along x-axis
     speed = 10.0
-    t = torch.arange(N).double() * dt
-    p = torch.zeros(N, 3).double()
+    t = torch.arange(N).float() * dt
+    p = torch.zeros(N, 3).float()
     p[:, 0] = speed * t  # x = speed * t
-    v = torch.zeros(N, 3).double()
+    v = torch.zeros(N, 3).float()
     v[:, 0] = speed
 
     # Identity rotations
-    Rot = torch.eye(3).double().unsqueeze(0).expand(N, -1, -1).clone()
+    Rot = torch.eye(3).float().unsqueeze(0).expand(N, -1, -1).clone()
 
     return Rot, p, v, t
 
 
 def make_circular_trajectory(N=10000, dt=0.01, radius=100.0):
     """Create a circular trajectory for testing."""
-    t = torch.arange(N).double() * dt
+    t = torch.arange(N).float() * dt
     omega = 2 * np.pi / (N * dt)  # one full circle
 
-    p = torch.zeros(N, 3).double()
+    p = torch.zeros(N, 3).float()
     p[:, 0] = radius * torch.cos(omega * t)
     p[:, 1] = radius * torch.sin(omega * t)
 
-    Rot = torch.eye(3).double().unsqueeze(0).expand(N, -1, -1).clone()
+    Rot = torch.eye(3).float().unsqueeze(0).expand(N, -1, -1).clone()
     for i in range(N):
         angle = omega * t[i]
         c, s = torch.cos(angle), torch.sin(angle)
@@ -92,8 +92,8 @@ class TestRPELoss:
 
     def test_precompute_short_trajectory(self):
         """Very short trajectory should still work (may have no pairs)."""
-        Rot = torch.eye(3).double().unsqueeze(0).expand(50, -1, -1).clone()
-        p = torch.zeros(50, 3).double()
+        Rot = torch.eye(3).float().unsqueeze(0).expand(50, -1, -1).clone()
+        p = torch.zeros(50, 3).float()
         loss = RPELoss()
         list_rpe = loss.precompute(Rot, p)
         assert len(list_rpe) == 3
@@ -116,7 +116,7 @@ class TestRPELoss:
 
         # Add position error
         p_noisy = p.clone()
-        p_noisy[:, 0] += torch.randn(p.shape[0]).double() * 5.0
+        p_noisy[:, 0] += torch.randn(p.shape[0]).float() * 5.0
 
         loss = loss_fn(Rot, p_noisy, Rot, p, list_rpe=list_rpe, N0=0)
         if loss != -1:
@@ -166,27 +166,27 @@ class TestRPELoss:
 class TestATELoss:
     def test_forward_perfect(self):
         N = 100
-        Rot = torch.eye(3).double().unsqueeze(0).expand(N, -1, -1)
-        p = torch.randn(N, 3).double()
+        Rot = torch.eye(3).float().unsqueeze(0).expand(N, -1, -1)
+        p = torch.randn(N, 3).float()
         loss_fn = ATELoss()
         loss = loss_fn(Rot, p, Rot, p)
         assert loss.item() < 1e-10
 
     def test_forward_with_error(self):
         N = 100
-        Rot = torch.eye(3).double().unsqueeze(0).expand(N, -1, -1)
-        p_gt = torch.randn(N, 3).double()
-        p_pred = p_gt + torch.randn(N, 3).double() * 0.1
+        Rot = torch.eye(3).float().unsqueeze(0).expand(N, -1, -1)
+        p_gt = torch.randn(N, 3).float()
+        p_pred = p_gt + torch.randn(N, 3).float() * 0.1
         loss_fn = ATELoss()
         loss = loss_fn(Rot, p_pred, Rot, p_gt)
         assert loss.item() > 0
 
     def test_forward_with_alignment(self):
         N = 100
-        Rot = torch.eye(3).double().unsqueeze(0).expand(N, -1, -1)
-        p_gt = torch.randn(N, 3).double()
+        Rot = torch.eye(3).float().unsqueeze(0).expand(N, -1, -1)
+        p_gt = torch.randn(N, 3).float()
         # Translate prediction — alignment should reduce error
-        p_pred = p_gt + torch.tensor([10.0, 0.0, 0.0]).double()
+        p_pred = p_gt + torch.tensor([10.0, 0.0, 0.0]).float()
         loss_fn_no_align = ATELoss(cfg={"align": False})
         loss_fn_align = ATELoss(cfg={"align": True})
         loss_no = loss_fn_no_align(Rot, p_pred, Rot, p_gt)
@@ -195,8 +195,8 @@ class TestATELoss:
 
     def test_gradient_flow(self):
         N = 50
-        Rot = torch.eye(3).double().unsqueeze(0).expand(N, -1, -1)
-        p_gt = torch.randn(N, 3).double()
+        Rot = torch.eye(3).float().unsqueeze(0).expand(N, -1, -1)
+        p_gt = torch.randn(N, 3).float()
         p_pred = p_gt.clone().requires_grad_(True)
         loss_fn = ATELoss()
         loss = loss_fn(Rot, p_pred, Rot, p_gt)
@@ -210,8 +210,8 @@ class TestATELoss:
 
     def test_reduction_sum(self):
         N = 50
-        Rot = torch.eye(3).double().unsqueeze(0).expand(N, -1, -1)
-        p_gt = torch.randn(N, 3).double()
+        Rot = torch.eye(3).float().unsqueeze(0).expand(N, -1, -1)
+        p_gt = torch.randn(N, 3).float()
         p_pred = p_gt + 0.1
 
         loss_mean = ATELoss(cfg={"reduction": "mean"})(Rot, p_pred, Rot, p_gt)

@@ -118,6 +118,18 @@ def evaluate_sequence(iekf, dataset, dataset_name):
     with torch.no_grad():
         measurements_covs = iekf.forward_nets(u)
         bias_corrections = iekf.forward_bias_net(u)
+        gyro_corrections = None
+        process_noise_scaling = None
+
+        # World model overrides / augments standalone networks
+        wm_out = iekf.forward_world_model(u)
+        if wm_out is not None:
+            if wm_out.measurement_covs is not None:
+                measurements_covs = wm_out.measurement_covs
+            if wm_out.acc_bias_corrections is not None:
+                bias_corrections = wm_out.acc_bias_corrections
+            gyro_corrections = wm_out.gyro_bias_corrections
+            process_noise_scaling = wm_out.process_noise_scaling
 
         N = len(t)
         Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i = iekf.run(
@@ -129,6 +141,8 @@ def evaluate_sequence(iekf, dataset, dataset_name):
             N,
             ang_gt[0],
             bias_corrections=bias_corrections,
+            gyro_corrections=gyro_corrections,
+            process_noise_scaling=process_noise_scaling,
         )
 
     # ---- numpy conversion ----

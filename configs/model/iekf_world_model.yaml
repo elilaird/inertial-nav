@@ -1,0 +1,125 @@
+# IEKF with World Model: shared CNN+GRU backbone with toggleable heads
+#
+# The WorldModel replaces (or runs alongside) the standalone
+# MeasurementCovNet and LearnedBiasCorrectionNet.  All four heads
+# can be independently enabled/disabled for A/B testing.
+
+name: "iekf_world_model"
+
+# ------------------------------------------------------------------
+# State / physics: identical to iekf_learned_cov
+# ------------------------------------------------------------------
+state_dim:
+  rotation: 9
+  velocity: 3
+  position: 3
+  bias_gyro: 3
+  bias_acc: 3
+  rotation_c_i: 9
+  translation_c_i: 3
+  total: 33
+
+P_dim: 21
+
+physics:
+  gravity: [0.0, 0.0, -9.80655]
+
+  process_noise:
+    cov_omega: 2.0e-4
+    cov_acc: 1.0e-3
+    cov_b_omega: 1.0e-8
+    cov_b_acc: 1.0e-6
+    cov_Rot_c_i: 1.0e-8
+    cov_t_c_i: 1.0e-8
+
+  initial_covariance:
+    cov_Rot0: 1.0e-6
+    cov_v0: 1.0e-1
+    cov_b_omega0: 1.0e-8
+    cov_b_acc0: 1.0e-3
+    cov_Rot_c_i0: 1.0e-5
+    cov_t_c_i0: 1.0e-2
+
+  measurement_noise:
+    cov_lat: 1.0
+    cov_up: 10.0
+
+# ------------------------------------------------------------------
+# Networks
+# ------------------------------------------------------------------
+networks:
+  # InitProcessCovNet – always on (learns P0 and base Q)
+  init_process_cov:
+    enabled: true
+    type: "InitProcessCovNet"
+    architecture:
+      output_dim: 6
+      initial_beta: 3.0
+      weight_scale: 10.0
+
+  # Standalone nets – disabled when world model heads subsume them
+  measurement_cov:
+    enabled: false
+    type: "MeasurementCovNet"
+
+  bias_correction:
+    enabled: false
+    type: "LearnedBiasCorrectionNet"
+
+  # World model – shared backbone with four toggleable heads
+  world_model:
+    enabled: true
+    type: "WorldModel"
+    architecture:
+      # Shared backbone
+      input_channels: 6       # [gyro_xyz, acc_xyz]
+      cnn_channels: 32
+      kernel_size: 5
+      cnn_dilation: 3
+      cnn_dropout: 0.5
+      gru_hidden_size: 64
+      gru_num_layers: 1
+      gru_dropout: 0.0
+
+      # ---------- heads ----------
+      # H1 – measurement covariance (replaces MeasurementCovNet)
+      measurement_cov_head:
+        enabled: true
+        output_dim: 2          # lateral, vertical
+        initial_beta: 3.0
+
+      # H2 – accelerometer bias correction (replaces LearnedBiasCorrectionNet)
+      # Add once H1 matches standalone MeasurementCovNet performance.
+      acc_bias_head:
+        enabled: false
+        output_dim: 3
+        max_correction: 0.5   # m/s²
+
+      # H3 – gyroscope bias correction (NEW capability)
+      # Add once H1+H2 are stable.
+      gyro_bias_head:
+        enabled: false
+        output_dim: 3
+        max_correction: 0.01  # rad/s – gyro drifts are small
+
+      # H4 – per-timestep / per-chunk process-noise scaling (NEW capability)
+      # Add last; most experimental.
+      process_noise_head:
+        enabled: false
+        output_dim: 6          # one scale per Q 3×3 block
+        mode: "per_chunk"      # "per_chunk" or "per_timestep"
+
+      # Near-zero init so heads start near identity
+      weight_scale: 0.01
+      bias_scale: 0.01
+
+# ------------------------------------------------------------------
+# Optimizer param-group for the world model
+# ------------------------------------------------------------------
+optimizer:
+  param_groups:
+    init_process_cov_net:
+      lr: 1.0e-4
+    world_model:
+      lr: 1.0e-4
+      weight_decay: 0.0

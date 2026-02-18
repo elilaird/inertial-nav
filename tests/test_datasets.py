@@ -166,11 +166,11 @@ class TestBaseIMUDataset:
 class TestTransforms:
     def _make_data(self, N=200):
         return {
-            't': torch.linspace(0, 2, N).double(),
-            'u': torch.randn(N, 6).double(),
-            'ang_gt': torch.randn(N, 3).double() * 0.1,
-            'p_gt': torch.cumsum(torch.randn(N, 3).double() * 0.01, dim=0),
-            'v_gt': torch.randn(N, 3).double() * 0.1,
+            't': torch.linspace(0, 2, N).float(),
+            'u': torch.randn(N, 6).float(),
+            'ang_gt': torch.randn(N, 3).float() * 0.1,
+            'p_gt': torch.cumsum(torch.randn(N, 3).float() * 0.01, dim=0),
+            'v_gt': torch.randn(N, 3).float() * 0.1,
         }
 
     def test_add_imu_noise(self):
@@ -188,7 +188,7 @@ class TestTransforms:
         out = transform(data)
         assert 'u_normalized' in out
         u_n = out['u_normalized']
-        assert torch.allclose(u_n.mean(dim=0), torch.zeros(6).double(), atol=0.1)
+        assert torch.allclose(u_n.mean(dim=0), torch.zeros(6).float(), atol=0.1)
 
     def test_random_subsequence_sampler(self):
         data = self._make_data(N=500)
@@ -219,10 +219,10 @@ class TestTransforms:
             'p_gt': np.random.randn(50, 3),
             'v_gt': np.random.randn(50, 3),
         }
-        transform = ToTensor(dtype=torch.float64)
+        transform = ToTensor(dtype=torch.float32)
         out = transform(data)
         assert isinstance(out['t'], torch.Tensor)
-        assert out['u'].dtype == torch.float64
+        assert out['u'].dtype == torch.float32
 
     def test_to_tensor_already_tensor(self):
         data = self._make_data()

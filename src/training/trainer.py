@@ -85,6 +85,7 @@ class Trainer:
         # Build components
         self.model = self._build_model()
         self.model.to(self.device)
+        cprint(f"\n{self.model}\n", flush=True)
         self.loss_fn = self._build_loss()
         self.optimizer = build_optimizer(self.optimizer_cfg, self.model)
         self.scheduler = build_scheduler(
@@ -121,7 +122,7 @@ class Trainer:
         # Checkpointing
         ckpt_cfg = self.training_cfg.get("checkpointing", {})
         if ckpt_cfg.get("enabled", True):
-            paths_cfg = self.cfg.get("paths")
+            paths_cfg = self.cfg.get("paths") or {}
             save_dir = paths_cfg.get("checkpoints", "checkpoints")
             cb_list.add(
                 CheckpointCallback(
@@ -133,8 +134,9 @@ class Trainer:
             )
 
         # Test evaluation during training
-        test_eval_cfg = self.training_cfg.get("validation").get("test_eval")
-        if test_eval_cfg.get("enabled", True):
+        validation_cfg = self.training_cfg.get("validation") or {}
+        test_eval_cfg = validation_cfg.get("test_eval") or {}
+        if test_eval_cfg.get("enabled", False):
             cb_list.add(
                 TestEvalCallback(
                     dataset=self.dataset,
@@ -514,6 +516,18 @@ class Trainer:
             # CNN runs on chunk only — gradient stays within this backward call
             meas_c = self.model.forward_nets(u[cs:ce])
             bc_c = self.model.forward_bias_net(u[cs:ce])
+            gc_c = None
+            pns_c = None
+
+            # World model overrides / augments standalone networks
+            wm_c = self.model.forward_world_model(u[cs:ce])
+            if wm_c is not None:
+                if wm_c.measurement_covs is not None:
+                    meas_c = wm_c.measurement_covs
+                if wm_c.acc_bias_corrections is not None:
+                    bc_c = wm_c.acc_bias_corrections
+                gc_c = wm_c.gyro_bias_corrections
+                pns_c = wm_c.process_noise_scaling
 
             # Filter forward for chunk_size timesteps
             traj, new_state = self.model.run_chunk(
@@ -522,6 +536,8 @@ class Trainer:
                 u[cs:ce],
                 meas_c,
                 bias_corrections_chunk=bc_c,
+                gyro_corrections_chunk=gc_c,
+                process_noise_scaling_chunk=pns_c,
             )
             Rot_c, _, p_c, *_ = traj
 
@@ -628,6 +644,18 @@ class Trainer:
         # Forward pass through networks
         measurements_covs = self.model.forward_nets(u)
         bias_corrections = self.model.forward_bias_net(u)
+        gyro_corrections = None
+        process_noise_scaling = None
+
+        # World model overrides / augments standalone networks
+        wm_out = self.model.forward_world_model(u)
+        if wm_out is not None:
+            if wm_out.measurement_covs is not None:
+                measurements_covs = wm_out.measurement_covs
+            if wm_out.acc_bias_corrections is not None:
+                bias_corrections = wm_out.acc_bias_corrections
+            gyro_corrections = wm_out.gyro_bias_corrections
+            process_noise_scaling = wm_out.process_noise_scaling
 
         # Run filter
         Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i = self.model.run(
@@ -639,6 +667,8 @@ class Trainer:
             t.shape[0],
             ang_gt[0],
             bias_corrections=bias_corrections,
+            gyro_corrections=gyro_corrections,
+            process_noise_scaling=process_noise_scaling,
         )
 
         # Compute loss

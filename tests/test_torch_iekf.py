@@ -41,7 +41,7 @@ class TestTorchIEKFBasics:
         iekf = TorchIEKF()
         assert isinstance(iekf.Id3, torch.Tensor)
         assert iekf.Id3.shape == (3, 3)
-        assert torch.allclose(iekf.Id3, torch.eye(3).double())
+        assert torch.allclose(iekf.Id3, torch.eye(3).float())
 
 
 class TestTorchIEKFGeometry:
@@ -49,65 +49,65 @@ class TestTorchIEKFGeometry:
 
     def test_skew_torch(self):
         """Test skew-symmetric matrix."""
-        v = torch.tensor([1.0, 2.0, 3.0]).double()
+        v = torch.tensor([1.0, 2.0, 3.0]).float()
         S = TorchIEKF.skew_torch(v)
 
         # Check skew-symmetry
         assert torch.allclose(S.t(), -S)
         # Check trace is zero
-        assert torch.isclose(torch.trace(S), torch.tensor(0.0).double())
+        assert torch.isclose(torch.trace(S), torch.tensor(0.0).float())
 
     def test_so3exp_torch_identity(self):
         """Test SO(3) exp at identity."""
-        phi = torch.zeros(3).double()
+        phi = torch.zeros(3).float()
         Rot = TorchIEKF.so3exp_torch(phi)
-        assert torch.allclose(Rot, torch.eye(3).double(), atol=1e-10)
+        assert torch.allclose(Rot, torch.eye(3).float(), atol=1e-6)
 
     def test_so3exp_torch_properties(self):
         """Test SO(3) exp produces valid rotation."""
-        phi = torch.tensor([0.1, 0.2, 0.3]).double()
+        phi = torch.tensor([0.1, 0.2, 0.3]).float()
         Rot = TorchIEKF.so3exp_torch(phi)
 
         # Check orthogonality
-        assert torch.allclose(Rot @ Rot.t(), torch.eye(3).double(), atol=1e-6)
+        assert torch.allclose(Rot @ Rot.t(), torch.eye(3).float(), atol=1e-6)
         # Check determinant
         assert torch.isclose(
-            torch.det(Rot), torch.tensor(1.0).double(), atol=1e-6
+            torch.det(Rot), torch.tensor(1.0).float(), atol=1e-6
         )
 
     def test_se23_exp_torch_identity(self):
         """Test SE_2(3) exp at identity."""
-        xi = torch.zeros(9).double()
+        xi = torch.zeros(9).float()
         Rot, x = TorchIEKF.se23_exp_torch(xi)
 
-        assert torch.allclose(Rot, torch.eye(3).double())
+        assert torch.allclose(Rot, torch.eye(3).float())
         assert x.shape == (3, 2)
 
     def test_from_rpy_torch(self):
         """Test RPY to rotation matrix conversion."""
-        roll = torch.tensor(0.1).double()
-        pitch = torch.tensor(0.2).double()
-        yaw = torch.tensor(0.3).double()
+        roll = torch.tensor(0.1).float()
+        pitch = torch.tensor(0.2).float()
+        yaw = torch.tensor(0.3).float()
 
         Rot = TorchIEKF.from_rpy_torch(roll, pitch, yaw)
 
         # Check valid rotation matrix
-        assert torch.allclose(Rot @ Rot.t(), torch.eye(3).double(), atol=1e-6)
+        assert torch.allclose(Rot @ Rot.t(), torch.eye(3).float(), atol=1e-6)
         assert torch.isclose(
-            torch.det(Rot), torch.tensor(1.0).double(), atol=1e-6
+            torch.det(Rot), torch.tensor(1.0).float(), atol=1e-6
         )
 
     def test_normalize_rot_torch(self):
         """Test rotation normalization."""
         # Start with valid rotation
         Rot = TorchIEKF.from_rpy_torch(
-            torch.tensor(0.1).double(),
-            torch.tensor(0.2).double(),
-            torch.tensor(0.3).double(),
+            torch.tensor(0.1).float(),
+            torch.tensor(0.2).float(),
+            torch.tensor(0.3).float(),
         )
 
         # Add small noise
-        Rot_noisy = Rot + 1e-5 * torch.randn(3, 3).double()
+        Rot_noisy = Rot + 1e-5 * torch.randn(3, 3).float()
 
         # Normalize
         Rot_normalized = TorchIEKF.normalize_rot_torch(Rot_noisy)
@@ -115,11 +115,11 @@ class TestTorchIEKFGeometry:
         # Check properties restored
         assert torch.allclose(
             Rot_normalized @ Rot_normalized.t(),
-            torch.eye(3).double(),
-            atol=1e-8,
+            torch.eye(3).float(),
+            atol=1e-5,
         )
         assert torch.isclose(
-            torch.det(Rot_normalized), torch.tensor(1.0).double(), atol=1e-8
+            torch.det(Rot_normalized), torch.tensor(1.0).float(), atol=1e-5
         )
 
 
@@ -140,11 +140,11 @@ class TestTorchIEKFInitialization:
         """Test state memory allocation via init_run."""
         iekf = TorchIEKF()
         N = 100
-        dt = torch.ones(N - 1).double() * 0.01
-        u = torch.zeros(N, 6).double()
-        p_mes = torch.zeros(N, 3).double()
-        v_mes = torch.zeros(N, 3).double()
-        ang0 = torch.tensor([0.1, 0.2, 0.3]).double()
+        dt = torch.ones(N - 1).float() * 0.01
+        u = torch.zeros(N, 6).float()
+        p_mes = torch.zeros(N, 3).float()
+        v_mes = torch.zeros(N, 3).float()
+        ang0 = torch.tensor([0.1, 0.2, 0.3]).float()
 
         Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i, P = iekf.init_run(
             dt, u, p_mes, v_mes, N, ang0
@@ -154,7 +154,7 @@ class TestTorchIEKFInitialization:
         assert v.shape == (N, 3)
         assert p.shape == (N, 3)
         # Check initial extrinsic calibration
-        assert torch.allclose(Rot_c_i[0], torch.eye(3).double())
+        assert torch.allclose(Rot_c_i[0], torch.eye(3).float())
 
 
 class TestTorchIEKFPropagation:
@@ -166,17 +166,17 @@ class TestTorchIEKFPropagation:
 
     def test_propagate_basic(self):
         """Test basic propagation step."""
-        Rot = torch.eye(3).double()
-        v = torch.zeros(3).double()
-        p = torch.zeros(3).double()
-        b_omega = torch.zeros(3).double()
-        b_acc = torch.zeros(3).double()
-        Rot_c_i = torch.eye(3).double()
-        t_c_i = torch.zeros(3).double()
+        Rot = torch.eye(3).float()
+        v = torch.zeros(3).float()
+        p = torch.zeros(3).float()
+        b_omega = torch.zeros(3).float()
+        b_acc = torch.zeros(3).float()
+        Rot_c_i = torch.eye(3).float()
+        t_c_i = torch.zeros(3).float()
         P = self.iekf.init_covariance()
 
-        u = torch.tensor([0, 0, 0, 0, 0, 9.80655]).double()
-        dt = torch.tensor(0.01).double()
+        u = torch.tensor([0, 0, 0, 0, 0, 9.80655]).float()
+        dt = torch.tensor(0.01).float()
 
         (
             Rot_new,
@@ -193,7 +193,7 @@ class TestTorchIEKFPropagation:
 
         # Check rotation matrix properties
         assert torch.allclose(
-            Rot_new @ Rot_new.t(), torch.eye(3).double(), atol=1e-6
+            Rot_new @ Rot_new.t(), torch.eye(3).float(), atol=1e-6
         )
 
         # Covariance should grow
@@ -201,18 +201,18 @@ class TestTorchIEKFPropagation:
 
     def test_propagate_with_motion(self):
         """Test propagation with angular motion."""
-        Rot = torch.eye(3).double()
-        v = torch.zeros(3).double()
-        p = torch.zeros(3).double()
-        b_omega = torch.zeros(3).double()
-        b_acc = torch.zeros(3).double()
-        Rot_c_i = torch.eye(3).double()
-        t_c_i = torch.zeros(3).double()
+        Rot = torch.eye(3).float()
+        v = torch.zeros(3).float()
+        p = torch.zeros(3).float()
+        b_omega = torch.zeros(3).float()
+        b_acc = torch.zeros(3).float()
+        Rot_c_i = torch.eye(3).float()
+        t_c_i = torch.zeros(3).float()
         P = self.iekf.init_covariance()
 
         # Angular velocity
-        u = torch.tensor([0.1, 0, 0, 0, 0, 9.80655]).double()
-        dt = torch.tensor(0.1).double()
+        u = torch.tensor([0.1, 0, 0, 0, 0, 9.80655]).float()
+        dt = torch.tensor(0.1).float()
 
         (
             Rot_new,
@@ -231,8 +231,88 @@ class TestTorchIEKFPropagation:
         assert not torch.allclose(Rot_new, Rot)
         # But still valid rotation
         assert torch.allclose(
-            Rot_new @ Rot_new.t(), torch.eye(3).double(), atol=1e-6
+            Rot_new @ Rot_new.t(), torch.eye(3).float(), atol=1e-6
         )
+
+    def test_propagate_with_gyro_correction(self):
+        """Test that gyro correction changes the rotation output."""
+        Rot = torch.eye(3).float()
+        v = torch.zeros(3).float()
+        p = torch.zeros(3).float()
+        b_omega = torch.zeros(3).float()
+        b_acc = torch.zeros(3).float()
+        Rot_c_i = torch.eye(3).float()
+        t_c_i = torch.zeros(3).float()
+        P = self.iekf.init_covariance()
+
+        u = torch.tensor([0.1, 0.0, 0.0, 0, 0, 9.80655]).float()
+        dt = torch.tensor(0.01).float()
+
+        # Without gyro correction
+        Rot_no_gc, *_ = self.iekf.propagate(
+            Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i, P, u, dt
+        )
+
+        # With gyro correction that partially cancels the angular velocity
+        gc = torch.tensor([0.05, 0.0, 0.0]).float()
+        Rot_gc, *_ = self.iekf.propagate(
+            Rot,
+            v,
+            p,
+            b_omega,
+            b_acc,
+            Rot_c_i,
+            t_c_i,
+            P,
+            u,
+            dt,
+            gyro_correction=gc,
+        )
+
+        # Rotations should differ
+        assert not torch.allclose(Rot_no_gc, Rot_gc, atol=1e-6)
+        # Both should still be valid rotations
+        assert torch.allclose(
+            Rot_gc @ Rot_gc.t(), torch.eye(3).float(), atol=1e-6
+        )
+
+    def test_propagate_with_process_noise_scaling(self):
+        """Test that process noise scaling changes the covariance output."""
+        Rot = torch.eye(3).float()
+        v = torch.zeros(3).float()
+        p = torch.zeros(3).float()
+        b_omega = torch.zeros(3).float()
+        b_acc = torch.zeros(3).float()
+        Rot_c_i = torch.eye(3).float()
+        t_c_i = torch.zeros(3).float()
+        P = self.iekf.init_covariance()
+
+        u = torch.tensor([0.0, 0.0, 0.0, 0, 0, 9.80655]).float()
+        dt = torch.tensor(0.01).float()
+
+        # Without scaling
+        *_, P_no_scale = self.iekf.propagate(
+            Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i, P, u, dt
+        )
+
+        # With 2x scaling on all Q blocks
+        scaling = 2.0 * torch.ones(6).float()
+        *_, P_scaled = self.iekf.propagate(
+            Rot,
+            v,
+            p,
+            b_omega,
+            b_acc,
+            Rot_c_i,
+            t_c_i,
+            P,
+            u,
+            dt,
+            process_noise_scaling=scaling,
+        )
+
+        # Scaled covariance should be larger (more noise added)
+        assert torch.trace(P_scaled) > torch.trace(P_no_scale)
 
 
 class TestTorchIEKFUpdate:
@@ -244,19 +324,19 @@ class TestTorchIEKFUpdate:
 
     def test_update_basic(self):
         """Test basic update step."""
-        Rot = torch.eye(3).double()
-        v = torch.tensor([1.0, 0.1, 0.05]).double()
-        p = torch.tensor([10.0, 0.0, 0.0]).double()
-        b_omega = torch.zeros(3).double()
-        b_acc = torch.zeros(3).double()
-        Rot_c_i = torch.eye(3).double()
-        t_c_i = torch.zeros(3).double()
+        Rot = torch.eye(3).float()
+        v = torch.tensor([1.0, 0.1, 0.05]).float()
+        p = torch.tensor([10.0, 0.0, 0.0]).float()
+        b_omega = torch.zeros(3).float()
+        b_acc = torch.zeros(3).float()
+        Rot_c_i = torch.eye(3).float()
+        t_c_i = torch.zeros(3).float()
         P = self.iekf.init_covariance()
 
-        u = torch.tensor([0, 0, 0, 0, 0, 9.80655]).double()
+        u = torch.tensor([0, 0, 0, 0, 0, 9.80655]).float()
         measurement_cov = torch.tensor(
             [self.iekf.cov_lat, self.iekf.cov_up]
-        ).double()
+        ).float()
 
         (
             Rot_up,
@@ -285,19 +365,19 @@ class TestTorchIEKFIntegration:
 
         # Create synthetic data
         N = 30
-        t = torch.linspace(0, 0.3, N).double()
+        t = torch.linspace(0, 0.3, N).float()
 
         # Stationary vehicle
-        u = torch.zeros(N, 6).double()
+        u = torch.zeros(N, 6).float()
         u[:, 5] = 9.80655
 
         measurements_covs = torch.tensor(
             [[iekf.cov_lat, iekf.cov_up]] * N
-        ).double()
+        ).float()
 
-        v_mes = torch.zeros(N, 3).double()
-        p_mes = torch.zeros(N, 3).double()
-        ang0 = torch.tensor([0.0, 0.0, 0.0]).double()
+        v_mes = torch.zeros(N, 3).float()
+        p_mes = torch.zeros(N, 3).float()
+        ang0 = torch.tensor([0.0, 0.0, 0.0]).float()
 
         # Run filter
         Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i = iekf.run(
@@ -312,7 +392,7 @@ class TestTorchIEKFIntegration:
         # Check all rotations are valid
         for i in range(N):
             assert torch.allclose(
-                Rot[i] @ Rot[i].t(), torch.eye(3).double(), atol=1e-5
+                Rot[i] @ Rot[i].t(), torch.eye(3).float(), atol=1e-5
             )
 
 
@@ -321,8 +401,8 @@ class TestHelperFunctions:
 
     def test_isclose_function(self):
         """Test isclose helper."""
-        a = torch.tensor(1.0).double()
-        b = torch.tensor(1.00001).double()  # Clearly different
+        a = torch.tensor(1.0).float()
+        b = torch.tensor(1.00001).float()  # Clearly different
 
         # Test that values within tolerance are close
         assert isclose(a, b, tol=1e-4)

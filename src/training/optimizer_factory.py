@@ -98,6 +98,17 @@ def _build_param_groups(cfg, model):
             }
         )
 
+    # WorldModel
+    wm_cfg = groups_cfg.get("world_model", None)
+    if wm_cfg and model.world_model is not None:
+        param_groups.append(
+            {
+                "params": model.world_model.parameters(),
+                "lr": wm_cfg.get("lr", 1e-4),
+                "weight_decay": wm_cfg.get("weight_decay", 0.0),
+            }
+        )
+
     return param_groups
 
 
