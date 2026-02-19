@@ -2,7 +2,7 @@
 
 # Training epochs
 epochs: 400
-max_loss: 2.0
+max_loss: null #2.0
 # Sequence length for training (in samples at 100 Hz)
 # 6000 samples = 60 seconds
 seq_dim: 6000
