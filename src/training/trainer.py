@@ -269,9 +269,7 @@ class Trainer:
 
                 step_metrics = {"train/sequence": dataset_name}
 
-                if loss == -1 or (
-                    isinstance(loss, torch.Tensor) and torch.isnan(loss)
-                ):
+                if loss == -1 or torch.isnan(loss):
                     n_skipped += 1
                     cprint(
                         f"  [step {step}, seq {j}] {dataset_name}: loss invalid",
@@ -280,20 +278,14 @@ class Trainer:
                     )
                     continue
 
-                # Clamp high losses instead of skipping — preserves gradient
-                # direction so the covariance networks learn from diverged runs.
-                if (
-                    self.max_loss is not None
-                    and isinstance(loss, torch.Tensor)
-                    and loss.item() > self.max_loss
-                ):
+                if self.max_loss is not None and loss.item() > self.max_loss:
                     cprint(
                         f"  [step {step}, seq {j}] {dataset_name}: "
                         f"loss clamped ({loss.item():.5f} -> {self.max_loss:.5f})",
                         "yellow",
                         flush=True,
                     )
-                    loss = loss.clamp(max=self.max_loss)
+                    loss = loss * (self.max_loss / loss.detach())
 
                 batch_loss = loss if batch_loss is None else batch_loss + loss
                 batch_count += 1
@@ -322,9 +314,9 @@ class Trainer:
                 self.model.parameters(), self.max_grad_norm
             )
 
-            if torch.isnan(g_norm) or g_norm > 3 * self.max_grad_norm:
+            if torch.isnan(g_norm):
                 cprint(
-                    f"  gradient norm too large: {g_norm:.5f}",
+                    f"  gradient norm is NaN, skipping step",
                     "yellow",
                     flush=True,
                 )
@@ -562,16 +554,16 @@ class Trainer:
                     "yellow",
                     flush=True,
                 )
-                loss = loss.clamp(max=self.max_loss)
+                loss = loss * (self.max_loss / loss.detach())
 
             loss.backward()
             g_norm = torch.nn.utils.clip_grad_norm_(
                 self.model.parameters(), self.max_grad_norm
             )
 
-            if torch.isnan(g_norm) or g_norm > 3 * self.max_grad_norm:
+            if torch.isnan(g_norm):
                 cprint(
-                    f"  [bptt chunk {ci}] grad norm too large: {g_norm:.4f}",
+                    f"  [bptt chunk {ci}] gradient norm is NaN, skipping step",
                     "yellow",
                 )
                 self.optimizer.zero_grad()
