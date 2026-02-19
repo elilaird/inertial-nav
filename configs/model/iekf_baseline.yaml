@@ -1,0 +1,16 @@
+# Classical IEKF with fixed covariances (baseline condition)
+# All learned components disabled for ablation study
+
+name: "iekf_baseline"
+
+_target_: configs.model.iekf_learned_cov
+
+networks:
+  init_process_cov:
+    enabled: false
+
+  measurement_cov:
+    enabled: false
+
+  bias_correction:
+    enabled: false

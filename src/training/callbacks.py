@@ -244,6 +244,18 @@ class TestEvalCallback(Callback):
                     "orientation_error"
                 ]["mean_deg"]
 
+                # Log bias correction statistics
+                if results.get("bias_correction_stats") is not None:
+                    stats = results["bias_correction_stats"]
+                    metrics[f"val_eval/{seq_name}/bias_corr_mean_mag"] = stats["mean_magnitude"]
+                    metrics[f"val_eval/{seq_name}/bias_corr_max_mag"] = stats["max_magnitude"]
+                    metrics[f"val_eval/{seq_name}/bias_corr_mean_x"] = stats["mean_per_axis"][0]
+                    metrics[f"val_eval/{seq_name}/bias_corr_mean_y"] = stats["mean_per_axis"][1]
+                    metrics[f"val_eval/{seq_name}/bias_corr_mean_z"] = stats["mean_per_axis"][2]
+                    metrics[f"val_eval/{seq_name}/bias_corr_std_x"] = stats["std_per_axis"][0]
+                    metrics[f"val_eval/{seq_name}/bias_corr_std_y"] = stats["std_per_axis"][1]
+                    metrics[f"val_eval/{seq_name}/bias_corr_std_z"] = stats["std_per_axis"][2]
+
                 if "metrics_imu" in results:
                     mi = results["metrics_imu"]
                     metrics[f"val_eval/{seq_name}/imu_t_rel"] = mi["rpe"][
@@ -258,8 +270,6 @@ class TestEvalCallback(Callback):
 
                 # Generate validation plots for WandB
                 try:
-                    
-
                     timestamps = results["t"] - results["t"][0]
                     p_imu = results.get("p_imu")
 
@@ -298,6 +308,17 @@ class TestEvalCallback(Callback):
                         seq_name=seq_name,
                     )
 
+                    # Generate bias correction plot if corrections exist
+                    fig_bias_corr = None
+                    if results.get("bias_corrections") is not None:
+                        from src.evaluation.visualization import plot_bias_correction_timeline
+                        fig_bias_corr = plot_bias_correction_timeline(
+                            timestamps,
+                            results["bias_corrections"],
+                            results["u"],
+                            seq_name=seq_name,
+                        )
+
                     metrics[f"val_eval/{seq_name}/trajectory_2d"] = (
                         wandb.Image(fig_2d)
                     )
@@ -313,6 +334,11 @@ class TestEvalCallback(Callback):
                     metrics[f"val_eval/{seq_name}/covs_with_imu"] = (
                         wandb.Image(fig_cov_imu)
                     )
+
+                    if fig_bias_corr is not None:
+                        metrics[f"val_eval/{seq_name}/bias_corrections"] = (
+                            wandb.Image(fig_bias_corr)
+                        )
 
                     plt.close("all")
                 except Exception:

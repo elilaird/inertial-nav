@@ -563,3 +563,62 @@ def plot_covariance_with_imu(
     axs[2].set_xlabel("Time (s)")
     fig.tight_layout()
     return fig
+
+
+def plot_bias_correction_timeline(
+    t, bias_corrections, u, seq_name="", save_path=None
+):
+    """
+    Plot per-timestep bias corrections and IMU signal magnitude.
+
+    Shows learned corrections to accelerometer bias and how they correlate
+    with acceleration magnitude and changes.
+
+    Args:
+        t: Timestamps (N,) numpy array (typically already offset from start).
+        bias_corrections: Learned corrections (N, 3) numpy array [x, y, z].
+        u: Raw IMU measurements (N, 6) numpy array [gyro_xyz, acc_xyz].
+        seq_name: Sequence name for the title.
+        save_path: Optional path to save figure.
+
+    Returns:
+        matplotlib.Figure
+    """
+    fig, axes = plt.subplots(4, 1, figsize=(14, 12), sharex=True)
+
+    # Plot corrections per axis
+    for i, label in enumerate(["X", "Y", "Z"]):
+        axes[i].plot(t, bias_corrections[:, i], label=f"Δb_acc_{label}", linewidth=1.5)
+        axes[i].set_ylabel(f"Δb_{label} (m/s²)")
+        axes[i].grid(True, alpha=0.3)
+        axes[i].axhline(0, color="k", linestyle="--", linewidth=0.5)
+        axes[i].legend(loc="upper right")
+
+    # Plot correction magnitude vs accelerometer magnitude
+    bc_mag = np.linalg.norm(bias_corrections, axis=1)
+    acc_mag = np.linalg.norm(u[:, 3:6], axis=1)
+
+    axes[3].plot(t, bc_mag, label="Correction Magnitude", color="C3", linewidth=1.5)
+    axes[3].set_ylabel("|Δb_acc| (m/s²)")
+    axes[3].set_xlabel("Time (s)")
+    axes[3].grid(True, alpha=0.3)
+
+    # Add twin axis for accelerometer magnitude
+    ax_twin = axes[3].twinx()
+    ax_twin.plot(t, acc_mag, label="Accel Magnitude", color="C4", alpha=0.6, linewidth=1.5)
+    ax_twin.set_ylabel("Acceleration (m/s²)", color="C4")
+    ax_twin.tick_params(axis="y", labelcolor="C4")
+
+    # Combine legends
+    lines1, labels1 = axes[3].get_legend_handles_labels()
+    lines2, labels2 = ax_twin.get_legend_handles_labels()
+    axes[3].legend(lines1 + lines2, labels1 + labels2, loc="upper left")
+
+    title = f"Learned Bias Corrections - {seq_name}" if seq_name else "Learned Bias Corrections"
+    fig.suptitle(title, fontsize=14, y=0.995)
+    fig.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches="tight")
+
+    return fig

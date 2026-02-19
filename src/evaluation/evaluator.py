@@ -131,6 +131,21 @@ def evaluate_sequence(iekf, dataset, dataset_name):
             bias_corrections=bias_corrections,
         )
 
+    # ---- Compute bias correction statistics before numpy conversion ----
+    bias_correction_stats = None
+    bias_corrections_np = None
+    if bias_corrections is not None:
+        bc_mag = torch.norm(bias_corrections, dim=1).cpu().numpy()  # (N,)
+        bc_np = bias_corrections.cpu().numpy()  # (N, 3)
+
+        bias_correction_stats = {
+            "mean_magnitude": float(np.mean(bc_mag)),
+            "max_magnitude": float(np.max(bc_mag)),
+            "mean_per_axis": bc_np.mean(axis=0).tolist(),  # [x, y, z]
+            "std_per_axis": bc_np.std(axis=0).tolist(),
+        }
+        bias_corrections_np = bc_np
+
     # ---- numpy conversion ----
     Rot = Rot.cpu().numpy()
     v = v.cpu().numpy()
@@ -196,6 +211,8 @@ def evaluate_sequence(iekf, dataset, dataset_name):
         ),
         "t": t_np,
         "measurements_covs": measurements_covs_np,
+        "bias_corrections": bias_corrections_np,
+        "bias_correction_stats": bias_correction_stats,
         "name": dataset_name,
     }
 

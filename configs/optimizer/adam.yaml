@@ -17,6 +17,10 @@ param_groups:
       lr: 1.0e-4
       weight_decay: 1.0e-8
 
+  bias_correction_net:
+    lr: 1.0e-4
+    weight_decay: 0.0  # No L2 regularization (rely on dropout for regularization)
+
 # Learning rate scheduling
 scheduler:
   enabled: false
