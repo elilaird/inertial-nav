@@ -60,7 +60,6 @@ class Trainer:
         self.seq_dim = self.training_cfg.get("seq_dim")
         self.batch_size = self.training_cfg.get("batch_size", 9)
         self.steps_per_epoch = self.training_cfg.get("steps_per_epoch", None)
-        self.max_loss = self.training_cfg.get("max_loss")
         self.seed = self.training_cfg.get("seed")
 
         # BPTT config
@@ -277,15 +276,6 @@ class Trainer:
                         flush=True,
                     )
                     continue
-
-                if self.max_loss is not None and loss.item() > self.max_loss:
-                    cprint(
-                        f"  [step {step}, seq {j}] {dataset_name}: "
-                        f"loss clamped ({loss.item():.5f} -> {self.max_loss:.5f})",
-                        "yellow",
-                        flush=True,
-                    )
-                    loss = loss * (self.max_loss / loss.detach())
 
                 batch_loss = loss if batch_loss is None else batch_loss + loss
                 batch_count += 1
@@ -543,18 +533,6 @@ class Trainer:
                 )
                 state = TorchIEKF.detach_state(new_state)
                 continue
-
-            # Clamp high losses instead of skipping — preserves gradient
-            # direction so the covariance networks learn from diverged runs.
-            if self.max_loss is not None and loss.item() > self.max_loss:
-                cprint(
-                    f"  [step {step}, seq {seq_idx}, chunk {ci}] "
-                    f"{dataset_name}: loss clamped "
-                    f"({loss.item():.5f} -> {self.max_loss:.5f})",
-                    "yellow",
-                    flush=True,
-                )
-                loss = loss * (self.max_loss / loss.detach())
 
             loss.backward()
             g_norm = torch.nn.utils.clip_grad_norm_(
