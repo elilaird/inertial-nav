@@ -279,19 +279,21 @@ class Trainer:
                         flush=True,
                     )
                     continue
-                elif (
+
+                # Clamp high losses instead of skipping — preserves gradient
+                # direction so the covariance networks learn from diverged runs.
+                if (
                     self.max_loss is not None
                     and isinstance(loss, torch.Tensor)
                     and loss.item() > self.max_loss
                 ):
-                    n_skipped += 1
                     cprint(
                         f"  [step {step}, seq {j}] {dataset_name}: "
-                        f"loss too high ({loss.item():.5f})",
+                        f"loss clamped ({loss.item():.5f} -> {self.max_loss:.5f})",
                         "yellow",
                         flush=True,
                     )
-                    continue
+                    loss = loss.clamp(max=self.max_loss)
 
                 batch_loss = loss if batch_loss is None else batch_loss + loss
                 batch_count += 1
@@ -538,11 +540,6 @@ class Trainer:
             is_invalid = loss == -1 or (
                 isinstance(loss, torch.Tensor) and torch.isnan(loss)
             )
-            is_too_high = (
-                self.max_loss is not None
-                and isinstance(loss, torch.Tensor)
-                and loss.item() > self.max_loss
-            )
 
             if is_invalid:
                 n_skipped += 1
@@ -554,16 +551,18 @@ class Trainer:
                 )
                 state = TorchIEKF.detach_state(new_state)
                 continue
-            if is_too_high:
-                n_skipped += 1
+
+            # Clamp high losses instead of skipping — preserves gradient
+            # direction so the covariance networks learn from diverged runs.
+            if self.max_loss is not None and loss.item() > self.max_loss:
                 cprint(
                     f"  [step {step}, seq {seq_idx}, chunk {ci}] "
-                    f"{dataset_name}: loss too high ({loss.item():.5f})",
+                    f"{dataset_name}: loss clamped "
+                    f"({loss.item():.5f} -> {self.max_loss:.5f})",
                     "yellow",
                     flush=True,
                 )
-                state = TorchIEKF.detach_state(new_state)
-                continue
+                loss = loss.clamp(max=self.max_loss)
 
             loss.backward()
             g_norm = torch.nn.utils.clip_grad_norm_(
