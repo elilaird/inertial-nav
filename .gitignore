@@ -18,3 +18,4 @@ output/
 notes.md
 .github/prompts
 .pytest_cache/
+notes/

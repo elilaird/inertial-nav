@@ -68,6 +68,12 @@ class Trainer:
         self.use_bptt = bptt_cfg.get("enabled", False)
         self.bptt_chunk_size = bptt_cfg.get("chunk_size", 500)
 
+        # KL regularization (LatentWorldModel)
+        wm_cfg = (self.model_cfg or {}).get("networks", {}).get("world_model", {})
+        self.kl_weight = wm_cfg.get("kl_weight", 0.0)
+        self.kl_anneal_epochs = wm_cfg.get("kl_anneal_epochs", 50)
+        self.current_epoch = 0
+
         # Gradient clipping
         gc_cfg = self.training_cfg.get("gradient_clipping")
         self.clip_gradients = gc_cfg.get("enabled")
@@ -174,6 +180,7 @@ class Trainer:
         for epoch in range(1, self.epochs + 1):
             self.callbacks.on_epoch_start(self, epoch)
 
+            self.current_epoch = epoch
             start_time = time.time()
             epoch_metrics = self.train_epoch(epoch)
             elapsed = time.time() - start_time
@@ -397,13 +404,14 @@ class Trainer:
         n_sequences = 0
         n_skipped = 0
         grad_norms = []
+        sigma_z_epoch = []
 
         for step in range(steps):
             sampled = rng.choice(seq_names, size=self.batch_size, replace=True)
 
             for j, dataset_name in enumerate(sampled):
                 Ns = train_filter[dataset_name]
-                seq_loss, seq_steps, seq_gnorms, seq_skipped = (
+                seq_loss, seq_steps, seq_gnorms, seq_skipped, seq_sigma_z = (
                     self._train_step_bptt(dataset_name, Ns, step, j)
                 )
 
@@ -422,6 +430,7 @@ class Trainer:
                 n_sequences += 1
                 n_skipped += seq_skipped
                 grad_norms.extend(seq_gnorms)
+                sigma_z_epoch.extend(seq_sigma_z)
                 cprint(
                     f"  [step {step}, seq {j}] {dataset_name}: "
                     f"loss={seq_loss / seq_steps:.5f} "
@@ -447,6 +456,8 @@ class Trainer:
             "train/n_optimizer_steps": n_optimizer_steps,
             "train/bptt_chunk_size": self.bptt_chunk_size,
         }
+        if sigma_z_epoch:
+            metrics["train/sigma_z"] = float(np.mean(sigma_z_epoch))
         for i, pg in enumerate(self.optimizer.param_groups):
             metrics[f"train/lr_group{i}"] = pg["lr"]
         return metrics
@@ -503,6 +514,7 @@ class Trainer:
         n_valid = 0
         n_skipped = 0
         gnorms = []
+        sigma_z_vals = []
         chunk_size = self.bptt_chunk_size
 
         for ci, cs in enumerate(range(0, N, chunk_size)):
@@ -518,6 +530,7 @@ class Trainer:
             bc_c = self.model.forward_bias_net(u[cs:ce])
             gc_c = None
             pns_c = None
+            bns_c = None
 
             # World model overrides / augments standalone networks
             wm_c = self.model.forward_world_model(u[cs:ce])
@@ -528,6 +541,7 @@ class Trainer:
                     bc_c = wm_c.acc_bias_corrections
                 gc_c = wm_c.gyro_bias_corrections
                 pns_c = wm_c.process_noise_scaling
+                bns_c = wm_c.bias_noise_scaling
 
             # Filter forward for chunk_size timesteps
             traj, new_state = self.model.run_chunk(
@@ -538,6 +552,7 @@ class Trainer:
                 bias_corrections_chunk=bc_c,
                 gyro_corrections_chunk=gc_c,
                 process_noise_scaling_chunk=pns_c,
+                bias_noise_scaling_chunk=bns_c,
             )
             Rot_c, _, p_c, *_ = traj
 
@@ -551,9 +566,20 @@ class Trainer:
                 N0=N0 + cs,
             )
 
-            is_invalid = loss == -1 or (
-                isinstance(loss, torch.Tensor) and torch.isnan(loss)
-            )
+            # KL regularization (LatentWorldModel)
+            if (
+                self.kl_weight > 0
+                and wm_c is not None
+                and wm_c.mu_z is not None
+            ):
+                kl = -0.5 * (
+                    1 + wm_c.log_var_z - wm_c.mu_z.pow(2) - wm_c.log_var_z.exp()
+                ).mean()
+                anneal = min(1.0, self.current_epoch / max(1, self.kl_anneal_epochs))
+                loss = loss + self.kl_weight * anneal * kl
+
+            is_invalid = loss == -1 or torch.isnan(loss)
+            
             is_too_high = (
                 self.max_loss is not None
                 and isinstance(loss, torch.Tensor)
@@ -598,6 +624,10 @@ class Trainer:
                 n_valid += 1
                 total_loss += loss.item()
                 gnorms.append(float(g_norm))
+                if wm_c is not None and wm_c.log_var_z is not None:
+                    sigma_z_vals.append(
+                        (0.5 * wm_c.log_var_z).exp().mean().item()
+                    )
 
             # ---- BPTT cut: detach state before next chunk ----
             state = TorchIEKF.detach_state(new_state)
@@ -605,7 +635,7 @@ class Trainer:
             if self.fast_dev_run:
                 break
 
-        return total_loss, n_valid, gnorms, n_skipped
+        return total_loss, n_valid, gnorms, n_skipped, sigma_z_vals
 
     def _train_step(self, dataset_name, Ns):
         """
@@ -648,6 +678,7 @@ class Trainer:
         process_noise_scaling = None
 
         # World model overrides / augments standalone networks
+        bias_noise_scaling = None
         wm_out = self.model.forward_world_model(u)
         if wm_out is not None:
             if wm_out.measurement_covs is not None:
@@ -656,6 +687,7 @@ class Trainer:
                 bias_corrections = wm_out.acc_bias_corrections
             gyro_corrections = wm_out.gyro_bias_corrections
             process_noise_scaling = wm_out.process_noise_scaling
+            bias_noise_scaling = wm_out.bias_noise_scaling
 
         # Run filter
         Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i = self.model.run(
@@ -669,6 +701,7 @@ class Trainer:
             bias_corrections=bias_corrections,
             gyro_corrections=gyro_corrections,
             process_noise_scaling=process_noise_scaling,
+            bias_noise_scaling=bias_noise_scaling,
         )
 
         # Compute loss
@@ -677,6 +710,20 @@ class Trainer:
             return -1
 
         loss = self.loss_fn(Rot, p, None, None, list_rpe=list_rpe, N0=N0)
+
+        # KL regularization (LatentWorldModel)
+        if (
+            isinstance(loss, torch.Tensor)
+            and self.kl_weight > 0
+            and wm_out is not None
+            and wm_out.mu_z is not None
+        ):
+            kl = -0.5 * (
+                1 + wm_out.log_var_z - wm_out.mu_z.pow(2) - wm_out.log_var_z.exp()
+            ).mean()
+            anneal = min(1.0, self.current_epoch / max(1, self.kl_anneal_epochs))
+            loss = loss + self.kl_weight * anneal * kl
+
         return loss
 
     def _prepare_loss_data(self):

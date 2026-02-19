@@ -1,20 +1,20 @@
 """
-WorldModel: shared CNN+GRU backbone with independently toggleable heads.
+LatentWorldModel: probabilistic latent variable world model for the IEKF.
 
 Architecture:
-    IMUFeatureExtractor (shared CNN) → GRU → {measurement, acc_bias, gyro_bias, Q} heads
+    IMUFeatureExtractor (shared CNN) → FC encoder head → (mu_z, log_var_z)
+    Reparameterization: z = mu_z + exp(0.5 * log_var_z) * epsilon
+    ProcessDecoder(z)      → delta_b_omega, delta_b_a, Q_bias_scale
+    MeasurementDecoder(z)  → N_n (measurement covariance)
 
-The shared backbone extracts temporal features from normalized IMU data via a
-causal dilated 1D CNN, then processes them through a GRU to obtain a latent
-state z_t with memory of the full history.  Four optional heads read z_t:
+The encoder runs once per timestep.  Both decoders condition on the same
+z sample drawn from the encoder's output distribution.
 
-    - measurement_head:   per-timestep R_t (measurement covariance)
-    - acc_bias_head:      per-timestep Δb_acc (accelerometer bias correction)
-    - gyro_bias_head:     per-timestep Δb_ω (gyroscope bias correction)
-    - process_noise_head: Q scaling (per-timestep or per-chunk)
+At eval / deterministic mode (torch.no_grad): z = mu_z (epsilon = 0).
+At training: z sampled via reparameterization trick.
 
-Each head can be enabled/disabled independently via config, allowing clean
-A/B testing.  All heads use near-zero init so the model starts as identity.
+The KL term KL(q(z|x) || N(0,I)) is returned via mu_z / log_var_z fields
+in WorldModelOutput and added to the loss in the trainer.
 """
 
 from dataclasses import dataclass
@@ -28,7 +28,7 @@ from src.models.base_covariance_net import BaseCovarianceNet
 
 @dataclass
 class WorldModelOutput:
-    """Container for world model predictions.  ``None`` = head disabled."""
+    """Container for world model predictions.  ``None`` = head/decoder disabled."""
 
     measurement_covs: Optional[torch.Tensor] = None
     """(N, 2) measurement covariance per timestep, or None."""
@@ -40,7 +40,16 @@ class WorldModelOutput:
     """(N, 3) gyroscope bias correction per timestep, or None."""
 
     process_noise_scaling: Optional[torch.Tensor] = None
-    """(N, 6) or (1, 6) process noise scaling factors, or None."""
+    """(N, 6) or (1, 6) process noise scaling factors, or None. Legacy field."""
+
+    bias_noise_scaling: Optional[torch.Tensor] = None
+    """(N, 3) per-axis Q_bias_scale applied to both b_omega and b_acc diagonals."""
+
+    mu_z: Optional[torch.Tensor] = None
+    """(N, latent_dim) posterior mean, used for KL loss."""
+
+    log_var_z: Optional[torch.Tensor] = None
+    """(N, latent_dim) posterior log-variance, used for KL loss."""
 
 
 class IMUFeatureExtractor(nn.Module):
@@ -88,9 +97,110 @@ class IMUFeatureExtractor(nn.Module):
         return self.net(u).transpose(1, 2).squeeze(0)
 
 
-class WorldModel(BaseCovarianceNet):
+class ProcessDecoder(nn.Module):
     """
-    Shared backbone with independently toggleable prediction heads.
+    MLP decoder: latent z → bias corrections + bias noise scaling.
+
+    Architecture:
+        FC: latent_dim → 32, ReLU
+        FC: 32 → 9
+
+    Output split:
+        raw[:, 0:3] → delta_b_omega = sigma_bw * alpha * tanh(raw[:, 0:3])
+        raw[:, 3:6] → delta_b_a     = sigma_ba * alpha * tanh(raw[:, 3:6])
+        raw[:, 6:9] → Q_bias_scale  = exp(raw[:, 6:9])
+
+    sigma_bw, sigma_ba are derived from the IEKF's Q at forward time.
+    When the network outputs zero: delta_b = 0, Q_bias_scale = 1 (identity).
+    """
+
+    def __init__(self, latent_dim: int, alpha: float = 3.0,
+                 weight_scale: float = 0.01, bias_scale: float = 0.01):
+        super().__init__()
+        self.alpha = alpha
+        self.net = nn.Sequential(
+            nn.Linear(latent_dim, 32),
+            nn.ReLU(),
+            nn.Linear(32, 9),
+        )
+        self._small_init(weight_scale, bias_scale)
+
+    def _small_init(self, ws: float, bs: float):
+        for layer in self.net:
+            if isinstance(layer, nn.Linear):
+                layer.weight.data.mul_(ws)
+                layer.bias.data.mul_(bs)
+
+    def forward(
+        self, z: torch.Tensor, sigma_bw: torch.Tensor, sigma_ba: torch.Tensor
+    ) -> tuple:
+        """
+        Args:
+            z:        (N, latent_dim)
+            sigma_bw: scalar or (3,) – sqrt of gyro bias noise variance
+            sigma_ba: scalar or (3,) – sqrt of acc bias noise variance
+        Returns:
+            delta_b_omega: (N, 3)
+            delta_b_a:     (N, 3)
+            Q_bias_scale:  (N, 3)
+        """
+        raw = self.net(z)  # (N, 9)
+        delta_b_omega = sigma_bw * self.alpha * torch.tanh(raw[:, 0:3])
+        delta_b_a = sigma_ba * self.alpha * torch.tanh(raw[:, 3:6])
+        Q_bias_scale = torch.exp(raw[:, 6:9])
+        return delta_b_omega, delta_b_a, Q_bias_scale
+
+
+class MeasurementDecoder(nn.Module):
+    """
+    MLP decoder: latent z → measurement noise covariance N_n.
+
+    Architecture:
+        FC: latent_dim → 32, ReLU
+        FC: 32 → 2
+
+    Output:
+        N_n = cov0_measurement * 10^(beta * tanh(raw))   per timestep
+
+    When the network outputs zero: N_n = cov0_measurement (baseline).
+    """
+
+    def __init__(self, latent_dim: int, beta: float = 3.0,
+                 weight_scale: float = 0.01, bias_scale: float = 0.01):
+        super().__init__()
+        self.beta = beta
+        self.net = nn.Sequential(
+            nn.Linear(latent_dim, 32),
+            nn.ReLU(),
+            nn.Linear(32, 2),
+        )
+        self._small_init(weight_scale, bias_scale)
+
+    def _small_init(self, ws: float, bs: float):
+        for layer in self.net:
+            if isinstance(layer, nn.Linear):
+                layer.weight.data.mul_(ws)
+                layer.bias.data.mul_(bs)
+
+    def forward(self, z: torch.Tensor, cov0_measurement: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            z:                (N, latent_dim)
+            cov0_measurement: (2,) baseline measurement covariance
+        Returns:
+            (N, 2) measurement covariance per timestep
+        """
+        raw = self.net(z)  # (N, 2)
+        return cov0_measurement.unsqueeze(0) * (10 ** (self.beta * torch.tanh(raw)))
+
+
+class LatentWorldModel(BaseCovarianceNet):
+    """
+    Latent variable world model: probabilistic encoder + two MLP decoders.
+
+    The encoder maps a window of IMU data to a distribution q(z|x) via a
+    dilated CNN + FC head.  A single z sample (reparameterization trick) is
+    passed to the ProcessDecoder and MeasurementDecoder.
 
     Constructor parameter names match the Hydra YAML config keys so that
     ``TorchIEKF._build_network`` can forward them without mapping.
@@ -101,15 +211,11 @@ class WorldModel(BaseCovarianceNet):
         kernel_size:          CNN kernel size.
         cnn_dilation:         Dilation for second conv layer.
         cnn_dropout:          Dropout probability for CNN.
-        gru_hidden_size:      GRU hidden-state dimension.
-        gru_num_layers:       GRU layers (currently 1; accepted for config compat).
-        gru_dropout:          GRU dropout (only used when ``gru_num_layers > 1``).
-        measurement_cov_head: Head config dict (or None to disable).
-        acc_bias_head:        Head config dict (or None to disable).
-        gyro_bias_head:       Head config dict (or None to disable).
-        process_noise_head:   Head config dict (or None to disable).
-        weight_scale:         Near-zero init multiplier for head weights.
-        bias_scale:           Near-zero init multiplier for head biases.
+        latent_dim:           Dimension of latent variable z.
+        measurement_decoder:  Decoder config dict (or None/disabled to skip).
+        process_decoder:      Decoder config dict (or None/disabled to skip).
+        weight_scale:         Near-zero init multiplier for all FC weights.
+        bias_scale:           Near-zero init multiplier for all FC biases.
     """
 
     def __init__(
@@ -119,20 +225,16 @@ class WorldModel(BaseCovarianceNet):
         kernel_size: int = 5,
         cnn_dilation: int = 3,
         cnn_dropout: float = 0.5,
-        gru_hidden_size: int = 64,
-        gru_num_layers: int = 1,
-        gru_dropout: float = 0.0,
-        measurement_cov_head: Optional[dict] = None,
-        acc_bias_head: Optional[dict] = None,
-        gyro_bias_head: Optional[dict] = None,
-        process_noise_head: Optional[dict] = None,
+        latent_dim: int = 8,
+        measurement_decoder: Optional[dict] = None,
+        process_decoder: Optional[dict] = None,
         weight_scale: float = 0.01,
         bias_scale: float = 0.01,
     ):
         super().__init__()
-        self.gru_hidden = gru_hidden_size
+        self.latent_dim = latent_dim
 
-        # ---- shared backbone ----
+        # ---- shared CNN backbone ----
         self.feature_extractor = IMUFeatureExtractor(
             input_channels=input_channels,
             cnn_channels=cnn_channels,
@@ -140,94 +242,32 @@ class WorldModel(BaseCovarianceNet):
             dilation=cnn_dilation,
             dropout=cnn_dropout,
         )
-        self.gru = nn.GRU(
-            cnn_channels,
-            gru_hidden_size,
-            num_layers=gru_num_layers,
-            dropout=gru_dropout if gru_num_layers > 1 else 0.0,
-            batch_first=True,
-        )
 
-        # ---- heads ----
-        heads = {
-            "measurement_cov": dict(measurement_cov_head or {}),
-            "acc_bias": dict(acc_bias_head or {}),
-            "gyro_bias": dict(gyro_bias_head or {}),
-            "process_noise": dict(process_noise_head or {}),
-        }
-        self._build_heads(heads, gru_hidden_size, weight_scale, bias_scale)
+        # ---- encoder FC head: cnn_channels → 2 * latent_dim (no activation) ----
+        self.encoder_fc = nn.Linear(cnn_channels, 2 * latent_dim)
+        self.encoder_fc.weight.data.mul_(weight_scale)
+        self.encoder_fc.bias.data.mul_(bias_scale)
 
-    # ------------------------------------------------------------------ #
-    # Head construction
-    # ------------------------------------------------------------------ #
-
-    def _build_heads(self, heads_cfg, hidden, ws, bs):
-        """Instantiate each enabled head as a child module."""
-
-        # -- measurement covariance R_t --
-        mc = heads_cfg.get("measurement_cov", {})
-        if mc.get("enabled", False):
-            out_dim = mc.get("output_dim", 2)
-            beta_val = mc.get("initial_beta", 3.0)
-            self.measurement_head = nn.Sequential(
-                nn.Linear(hidden, out_dim),
-                nn.Tanh(),
+        # ---- decoders ----
+        meas_cfg = dict(measurement_decoder or {})
+        self.measurement_dec: Optional[MeasurementDecoder] = None
+        if meas_cfg.get("enabled", False):
+            self.measurement_dec = MeasurementDecoder(
+                latent_dim=latent_dim,
+                beta=meas_cfg.get("beta", 3.0),
+                weight_scale=weight_scale,
+                bias_scale=bias_scale,
             )
-            self.register_buffer(
-                "beta_measurement",
-                beta_val * torch.ones(out_dim),
-            )
-            self._small_init(self.measurement_head[0], ws, bs)
-        else:
-            self.measurement_head = None
 
-        # -- accelerometer bias correction Δb_acc --
-        ab = heads_cfg.get("acc_bias", {})
-        if ab.get("enabled", False):
-            out_dim = ab.get("output_dim", 3)
-            self.max_acc_correction = ab.get("max_correction", 0.5)
-            self.acc_bias_head = nn.Sequential(
-                nn.Linear(hidden, out_dim),
-                nn.Tanh(),
+        proc_cfg = dict(process_decoder or {})
+        self.process_dec: Optional[ProcessDecoder] = None
+        if proc_cfg.get("enabled", False):
+            self.process_dec = ProcessDecoder(
+                latent_dim=latent_dim,
+                alpha=proc_cfg.get("alpha", 3.0),
+                weight_scale=weight_scale,
+                bias_scale=bias_scale,
             )
-            self._small_init(self.acc_bias_head[0], ws, bs)
-        else:
-            self.acc_bias_head = None
-            self.max_acc_correction = 0.0
-
-        # -- gyroscope bias correction Δb_ω --
-        gb = heads_cfg.get("gyro_bias", {})
-        if gb.get("enabled", False):
-            out_dim = gb.get("output_dim", 3)
-            self.max_gyro_correction = gb.get("max_correction", 0.01)
-            self.gyro_bias_head = nn.Sequential(
-                nn.Linear(hidden, out_dim),
-                nn.Tanh(),
-            )
-            self._small_init(self.gyro_bias_head[0], ws, bs)
-        else:
-            self.gyro_bias_head = None
-            self.max_gyro_correction = 0.0
-
-        # -- process noise scaling Q_t --
-        pn = heads_cfg.get("process_noise", {})
-        if pn.get("enabled", False):
-            out_dim = pn.get("output_dim", 6)
-            self.per_timestep_q = pn.get("per_timestep", False)
-            self.process_noise_head = nn.Sequential(
-                nn.Linear(hidden, out_dim),
-                nn.Tanh(),
-            )
-            self._small_init(self.process_noise_head[0], ws, bs)
-        else:
-            self.process_noise_head = None
-            self.per_timestep_q = False
-
-    @staticmethod
-    def _small_init(linear: nn.Linear, ws: float, bs: float):
-        """Near-zero initialisation so the head starts as identity."""
-        linear.weight.data.mul_(ws)
-        linear.bias.data.mul_(bs)
 
     # ------------------------------------------------------------------ #
     # Forward
@@ -235,54 +275,50 @@ class WorldModel(BaseCovarianceNet):
 
     def forward(self, u: torch.Tensor, iekf=None) -> WorldModelOutput:
         """
-        Run shared backbone + all enabled heads.
+        Run encoder + reparameterization + decoders.
 
         Args:
             u:    (1, C, N) normalized IMU tensor.
-            iekf: TorchIEKF instance (provides ``cov0_measurement`` baseline).
+            iekf: TorchIEKF instance (provides ``cov0_measurement`` and ``Q``).
 
         Returns:
             ``WorldModelOutput`` dataclass.
         """
-        # Shared feature extraction
-        features = self.feature_extractor(u)  # (N, cnn_channels)
-        z, _ = self.gru(features.unsqueeze(0))  # (1, N, gru_hidden)
-        z = z.squeeze(0)  # (N, gru_hidden)
+        # CNN features: (N, cnn_channels)
+        features = self.feature_extractor(u)
 
-        out = WorldModelOutput()
+        # Encoder FC: (N, 2 * latent_dim)
+        enc_out = self.encoder_fc(features)
+        mu_z = enc_out[:, : self.latent_dim]
+        log_var_z = enc_out[:, self.latent_dim :]
 
-        # -- measurement covariance --
-        if self.measurement_head is not None and iekf is not None:
-            mc_raw = self.measurement_head(z)  # (N, 2)
-            mc_scaled = self.beta_measurement.unsqueeze(0) * mc_raw
-            out.measurement_covs = iekf.cov0_measurement.unsqueeze(0) * (
-                10**mc_scaled
+        # Reparameterization: stochastic during training, deterministic at eval
+        if self.training:
+            epsilon = torch.randn_like(mu_z)
+            z = mu_z + torch.exp(0.5 * log_var_z) * epsilon
+        else:
+            z = mu_z
+
+        out = WorldModelOutput(mu_z=mu_z, log_var_z=log_var_z)
+
+        # ---- measurement decoder ----
+        if self.measurement_dec is not None and iekf is not None:
+            out.measurement_covs = self.measurement_dec(z, iekf.cov0_measurement)
+
+        # ---- process decoder ----
+        if self.process_dec is not None and iekf is not None:
+            # Derive sigma_bw and sigma_ba from the IEKF's Q matrix
+            sigma_bw = iekf.Q[9, 9].sqrt()
+            sigma_ba = iekf.Q[12, 12].sqrt()
+            delta_b_omega, delta_b_a, Q_bias_scale = self.process_dec(
+                z, sigma_bw, sigma_ba
             )
-
-        # -- accelerometer bias correction --
-        if self.acc_bias_head is not None:
-            out.acc_bias_corrections = (
-                self.acc_bias_head(z) * self.max_acc_correction
-            )
-
-        # -- gyroscope bias correction --
-        if self.gyro_bias_head is not None:
-            out.gyro_bias_corrections = (
-                self.gyro_bias_head(z) * self.max_gyro_correction
-            )
-
-        # -- process noise scaling --
-        if self.process_noise_head is not None:
-            q_raw = self.process_noise_head(z)  # (N, 6)
-            q_scaling = 10**q_raw  # range ~[0.1, 10]
-            if self.per_timestep_q:
-                out.process_noise_scaling = q_scaling
-            else:
-                # Per-chunk: mean-pool to a single (1, 6) vector
-                out.process_noise_scaling = q_scaling.mean(dim=0, keepdim=True)
+            out.gyro_bias_corrections = delta_b_omega
+            out.acc_bias_corrections = delta_b_a
+            out.bias_noise_scaling = Q_bias_scale
 
         return out
 
     def get_output_dim(self):
-        """Not meaningful for multi-head model; returns GRU hidden dim."""
-        return self.gru_hidden
+        """Returns latent dimension."""
+        return self.latent_dim

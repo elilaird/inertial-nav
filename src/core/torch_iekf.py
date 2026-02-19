@@ -195,7 +195,7 @@ class TorchIEKF(torch.nn.Module):
             "init_process_cov": "InitProcessCovNet",
             "measurement_cov": "MeasurementCovNet",
             "bias_correction": "LearnedBiasCorrectionNet",
-            "world_model": "WorldModel",
+            "world_model": "LatentWorldModel",
         }
 
         for key, attr in [
@@ -268,6 +268,7 @@ class TorchIEKF(torch.nn.Module):
         bias_corrections=None,
         gyro_corrections=None,
         process_noise_scaling=None,
+        bias_noise_scaling=None,
     ):
         """
         Run the filter on a sequence of IMU measurements.
@@ -286,6 +287,8 @@ class TorchIEKF(torch.nn.Module):
                 corrections (N, 3) from WorldModel.
             process_noise_scaling: Optional Q scaling factors — either
                 (N, 6) per-timestep or (1, 6) per-chunk.
+            bias_noise_scaling: Optional per-timestep per-axis bias noise
+                scaling (N, 3) applied to both b_omega and b_acc Q diagonals.
 
         Returns:
             Tuple of (Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i)
@@ -313,6 +316,7 @@ class TorchIEKF(torch.nn.Module):
                     pns_i = process_noise_scaling[i]
             else:
                 pns_i = None
+            bns_i = bias_noise_scaling[i] if bias_noise_scaling is not None else None
 
             Rot_i, v_i, p_i, b_omega_i, b_acc_i, Rot_c_i_i, t_c_i_i, P_i = (
                 self.propagate(
@@ -329,6 +333,7 @@ class TorchIEKF(torch.nn.Module):
                     bias_correction=bc_i,
                     gyro_correction=gc_i,
                     process_noise_scaling=pns_i,
+                    bias_noise_scaling=bns_i,
                 )
             )
 
@@ -406,6 +411,7 @@ class TorchIEKF(torch.nn.Module):
         bias_corrections_chunk=None,
         gyro_corrections_chunk=None,
         process_noise_scaling_chunk=None,
+        bias_noise_scaling_chunk=None,
     ):
         """
         Run the filter for one chunk of timesteps, starting from ``state``.
@@ -423,6 +429,8 @@ class TorchIEKF(torch.nn.Module):
             gyro_corrections_chunk: Optional per-timestep gyroscope bias
                 corrections (K, 3).
             process_noise_scaling_chunk: Optional Q scaling — (K, 6) or (1, 6).
+            bias_noise_scaling_chunk: Optional per-timestep per-axis bias noise
+                scaling (K, 3) applied to both b_omega and b_acc Q diagonals.
 
         Returns:
             traj:       Tuple (Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i),
@@ -470,6 +478,11 @@ class TorchIEKF(torch.nn.Module):
                     pns_i = process_noise_scaling_chunk[i]
             else:
                 pns_i = None
+            bns_i = (
+                bias_noise_scaling_chunk[i]
+                if bias_noise_scaling_chunk is not None
+                else None
+            )
 
             Rot_i, v_i, p_i, b_omega_i, b_acc_i, Rot_c_i_i, t_c_i_i, P_i = (
                 self.propagate(
@@ -486,6 +499,7 @@ class TorchIEKF(torch.nn.Module):
                     bias_correction=bc_i,
                     gyro_correction=gc_i,
                     process_noise_scaling=pns_i,
+                    bias_noise_scaling=bns_i,
                 )
             )
             (
@@ -581,6 +595,7 @@ class TorchIEKF(torch.nn.Module):
         bias_correction=None,
         gyro_correction=None,
         process_noise_scaling=None,
+        bias_noise_scaling=None,
     ):
         """
         Propagate state forward one timestep using classical inertial
@@ -590,6 +605,8 @@ class TorchIEKF(torch.nn.Module):
             bias_correction: Optional (3,) — additive Δb_acc(t).
             gyro_correction: Optional (3,) — additive Δb_ω(t).
             process_noise_scaling: Optional (6,) — multiplicative Q scaling.
+            bias_noise_scaling: Optional (3,) — per-axis scaling for both
+                b_omega and b_acc Q diagonal elements.
         """
         Rot_prev = Rot_prev.clone()
 
@@ -625,6 +642,7 @@ class TorchIEKF(torch.nn.Module):
             u,
             dt,
             process_noise_scaling=process_noise_scaling,
+            bias_noise_scaling=bias_noise_scaling,
         )
 
         return Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i, P
@@ -640,6 +658,7 @@ class TorchIEKF(torch.nn.Module):
         u,
         dt,
         process_noise_scaling=None,
+        bias_noise_scaling=None,
     ):
         """Propagate covariance matrix one timestep.
 
@@ -647,6 +666,8 @@ class TorchIEKF(torch.nn.Module):
             process_noise_scaling: Optional (6,) tensor of multiplicative
                 scaling factors for Q diagonal blocks.  Order matches
                 ``set_Q``: [omega, acc, b_omega, b_acc, Rot_c_i, t_c_i].
+            bias_noise_scaling: Optional (3,) tensor of per-axis scaling
+                applied elementwise to both b_omega and b_acc Q diagonals.
         """
         F = P.new_zeros(self.P_dim, self.P_dim)
         G = P.new_zeros(self.P_dim, self.Q.shape[0])
@@ -659,6 +680,18 @@ class TorchIEKF(torch.nn.Module):
                     Q[3 * k : 3 * k + 3, 3 * k : 3 * k + 3]
                     * process_noise_scaling[k]
                 )
+
+        # Apply per-axis bias noise scaling (LatentWorldModel Q_bias_scale).
+        # Use torch.cat + torch.diag to avoid in-place ops on a tracked tensor,
+        # which would break autograd.
+        if bias_noise_scaling is not None:
+            Q_dim = Q.shape[0]  # 18
+            ones_pre = torch.ones(9, dtype=Q.dtype, device=Q.device)
+            ones_post = torch.ones(Q_dim - 15, dtype=Q.dtype, device=Q.device)
+            diag_scale = torch.cat(
+                [ones_pre, bias_noise_scaling, bias_noise_scaling, ones_post]
+            )
+            Q = Q * torch.diag(diag_scale)
 
         v_skew_rot = self.skew_torch(v_prev).mm(Rot_prev)
         p_skew_rot = self.skew_torch(p_prev).mm(Rot_prev)
