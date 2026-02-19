@@ -2,10 +2,16 @@
 
 # Training epochs
 epochs: 400
-max_loss: 2e1
+max_loss: 2.0
 # Sequence length for training (in samples at 100 Hz)
 # 6000 samples = 60 seconds
 seq_dim: 6000
+
+curriculum:
+    enabled: false
+    start_seq_dim: 2000  # initial window (samples); must be >= bptt.chunk_size
+    end_seq_dim: ${training.seq_dim}  # ramp up to the full seq_dim
+    warmup_epochs: 100   # linearly increase over this many epochs
 
 # Batch size: number of sequences sampled WITH REPLACEMENT per optimizer step.
 # The paper uses 9 (one step per epoch covers ~same compute as legacy 8-sequence loop).
@@ -15,11 +21,7 @@ batch_size: 9
 # null = auto: ceil(n_train_sequences / batch_size), matching legacy total-sequence count.
 steps_per_epoch: null
 
-# Truncated Backpropagation Through Time (TBPTT)
-# When enabled, each sequence is divided into non-overlapping chunks.
-# An optimizer step is taken after each chunk; filter state is detached
-# at chunk boundaries to limit gradient graph depth.
-# Set enabled: false to use the standard (full-sequence) mode.
+#truncated backpropagation through time (tBPTT) configuration
 bptt:
     enabled: true
     chunk_size: 2000 # timesteps per chunk (500 = 5 s at 100 Hz)

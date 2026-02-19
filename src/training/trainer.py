@@ -63,6 +63,13 @@ class Trainer:
         self.max_loss = self.training_cfg.get("max_loss")
         self.seed = self.training_cfg.get("seed")
 
+        # Curriculum schedule for seq_dim
+        cur_cfg = self.training_cfg.get("curriculum", {})
+        self.curriculum_enabled = cur_cfg.get("enabled", False)
+        self.curriculum_start = cur_cfg.get("start_seq_dim", self.seq_dim)
+        self.curriculum_end = cur_cfg.get("end_seq_dim", self.seq_dim)
+        self.curriculum_warmup = cur_cfg.get("warmup_epochs", 100)
+
         # BPTT config
         bptt_cfg = self.training_cfg.get("bptt", {})
         self.use_bptt = bptt_cfg.get("enabled", False)
@@ -170,6 +177,9 @@ class Trainer:
         self._prepare_loss_data()
 
         for epoch in range(1, self.epochs + 1):
+            # Update seq_dim per curriculum schedule
+            self._update_seq_dim(epoch)
+
             self.callbacks.on_epoch_start(self, epoch)
 
             start_time = time.time()
@@ -177,10 +187,12 @@ class Trainer:
             elapsed = time.time() - start_time
 
             epoch_metrics["train/epoch_time"] = elapsed
+            epoch_metrics["train/seq_dim"] = self.seq_dim
             self.callbacks.on_epoch_end(self, epoch, epoch_metrics)
 
             print(
                 f"Epoch {epoch:3d} | loss: {epoch_metrics.get('train/loss_epoch', float('nan')):.5f} "
+                f"| seq_dim: {self.seq_dim} "
                 f"| time: {elapsed:.1f}s",
                 flush=True,
             )
@@ -679,6 +691,26 @@ class Trainer:
         for name in list(self.dataset.datasets_train_filter.keys()):
             if name not in list_rpe:
                 self.dataset.datasets_train_filter.pop(name)
+
+    def _update_seq_dim(self, epoch):
+        """Update seq_dim according to the curriculum schedule.
+
+        Linearly ramps from ``curriculum_start`` to ``curriculum_end``
+        over ``curriculum_warmup`` epochs, snapped to the nearest
+        ``bptt_chunk_size`` so chunks divide evenly.
+        """
+        if not self.curriculum_enabled:
+            return
+
+        t = min(epoch / self.curriculum_warmup, 1.0)
+        raw = self.curriculum_start + t * (
+            self.curriculum_end - self.curriculum_start
+        )
+
+        # Snap to nearest chunk boundary so BPTT chunks divide evenly
+        step = self.bptt_chunk_size if self.use_bptt else 1
+        self.seq_dim = int(round(raw / step) * step)
+        self.seq_dim = max(self.seq_dim, step)  # at least one chunk
 
     @staticmethod
     def _get_start_and_end(seq_dim, u):
