@@ -60,7 +60,6 @@ class Trainer:
         self.seq_dim = self.training_cfg.get("seq_dim")
         self.batch_size = self.training_cfg.get("batch_size", 9)
         self.steps_per_epoch = self.training_cfg.get("steps_per_epoch", None)
-        self.max_loss = self.training_cfg.get("max_loss")
         self.seed = self.training_cfg.get("seed")
 
         # BPTT config
@@ -278,25 +277,10 @@ class Trainer:
 
                 step_metrics = {"train/sequence": dataset_name}
 
-                if loss == -1 or (
-                    isinstance(loss, torch.Tensor) and torch.isnan(loss)
-                ):
+                if loss == -1 or torch.isnan(loss):
                     n_skipped += 1
                     cprint(
                         f"  [step {step}, seq {j}] {dataset_name}: loss invalid",
-                        "yellow",
-                        flush=True,
-                    )
-                    continue
-                elif (
-                    self.max_loss is not None
-                    and isinstance(loss, torch.Tensor)
-                    and loss.item() > self.max_loss
-                ):
-                    n_skipped += 1
-                    cprint(
-                        f"  [step {step}, seq {j}] {dataset_name}: "
-                        f"loss too high ({loss.item():.5f})",
                         "yellow",
                         flush=True,
                     )
@@ -329,9 +313,9 @@ class Trainer:
                 self.model.parameters(), self.max_grad_norm
             )
 
-            if torch.isnan(g_norm) or g_norm > 3 * self.max_grad_norm:
+            if torch.isnan(g_norm):
                 cprint(
-                    f"  gradient norm too large: {g_norm:.5f}",
+                    f"  gradient norm is NaN, skipping step",
                     "yellow",
                     flush=True,
                 )
@@ -578,29 +562,11 @@ class Trainer:
                 anneal = min(1.0, self.current_epoch / max(1, self.kl_anneal_epochs))
                 loss = loss + self.kl_weight * anneal * kl
 
-            is_invalid = loss == -1 or torch.isnan(loss)
-            
-            is_too_high = (
-                self.max_loss is not None
-                and isinstance(loss, torch.Tensor)
-                and loss.item() > self.max_loss
-            )
-
-            if is_invalid:
+            if loss == -1 or torch.isnan(loss):
                 n_skipped += 1
                 cprint(
                     f"  [step {step}, seq {seq_idx}, chunk {ci}] "
                     f"{dataset_name}: loss invalid",
-                    "yellow",
-                    flush=True,
-                )
-                state = TorchIEKF.detach_state(new_state)
-                continue
-            if is_too_high:
-                n_skipped += 1
-                cprint(
-                    f"  [step {step}, seq {seq_idx}, chunk {ci}] "
-                    f"{dataset_name}: loss too high ({loss.item():.5f})",
                     "yellow",
                     flush=True,
                 )
@@ -612,9 +578,9 @@ class Trainer:
                 self.model.parameters(), self.max_grad_norm
             )
 
-            if torch.isnan(g_norm) or g_norm > 3 * self.max_grad_norm:
+            if torch.isnan(g_norm):
                 cprint(
-                    f"  [bptt chunk {ci}] grad norm too large: {g_norm:.4f}",
+                    f"  [bptt chunk {ci}] gradient norm is NaN, skipping step",
                     "yellow",
                 )
                 self.optimizer.zero_grad()
