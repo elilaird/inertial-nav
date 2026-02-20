@@ -103,8 +103,8 @@ networks:
         alpha: 3.0            # bound: corrections within ±alpha*sigma_{bw,ba}
 
       # Near-zero init so decoders start as identity (no correction initially)
-      weight_scale: 1.0 # 0.01
-      bias_scale: 1.0 #0.01
+      weight_scale: 0.01
+      bias_scale: 0.01
 
 # ------------------------------------------------------------------
 # Optimizer param-groups for the world model
