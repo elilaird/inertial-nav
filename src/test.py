@@ -38,6 +38,7 @@ from src.evaluation.visualization import (
     plot_detailed_errors,
     plot_body_frame_velocity,
     plot_covariance_with_imu,
+    plot_world_model_uncertainty,
 )
 from src.data.kitti_dataset import KITTIDataset
 
@@ -241,6 +242,23 @@ def main(cfg: DictConfig):
                 dpi=150,
             )
 
+            # World model uncertainty plot (if available)
+            fig_unc = None
+            if results.get("uncertainty") is not None:
+                fig_unc = plot_world_model_uncertainty(
+                    results["uncertainty"],
+                    p,
+                    p_gt,
+                    timestamps=timestamps,
+                    seq_name=dataset_name,
+                )
+                fig_unc.savefig(
+                    os.path.join(
+                        results_dir, f"{dataset_name}_wm_uncertainty.png"
+                    ),
+                    dpi=150,
+                )
+
             if use_wandb:
                 metrics = results["metrics"]
                 log_dict = {
@@ -268,6 +286,10 @@ def main(cfg: DictConfig):
                         fig_cov_imu
                     ),
                 }
+                if fig_unc is not None:
+                    log_dict[f"test/{dataset_name}/wm_uncertainty"] = (
+                        wandb.Image(fig_unc)
+                    )
                 if "metrics_imu" in results:
                     mi = results["metrics_imu"]
                     log_dict.update(

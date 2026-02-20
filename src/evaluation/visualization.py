@@ -563,3 +563,138 @@ def plot_covariance_with_imu(
     axs[2].set_xlabel("Time (s)")
     fig.tight_layout()
     return fig
+
+
+def plot_world_model_uncertainty(
+    uncertainty,
+    p_pred,
+    p_gt,
+    timestamps=None,
+    seq_name="",
+):
+    """
+    Plot world model epistemic and aleatoric uncertainty over the trajectory.
+
+    Top subplot: position error alongside aleatoric uncertainty (encoder
+    sigma_z, the model's self-reported noise level).
+
+    Middle subplot: epistemic uncertainty of measurement covariance
+    predictions (std across MC z samples), showing where the model is
+    unsure about its own predictions.
+
+    Bottom subplot: epistemic uncertainty of bias correction predictions
+    (acc + gyro std across MC z samples), if the process decoder is active.
+
+    Args:
+        uncertainty: Dict from ``_compute_world_model_uncertainty``.
+        p_pred:      Predicted positions (N, 3) numpy array.
+        p_gt:        Ground truth positions (N, 3) numpy array.
+        timestamps:  Time values (N,). If None, uses sample indices.
+        seq_name:    Sequence name for the title.
+
+    Returns:
+        matplotlib.Figure
+    """
+    has_process = (
+        uncertainty.get("epistemic_acc_std") is not None
+        or uncertainty.get("epistemic_gyro_std") is not None
+    )
+    n_rows = 3 if has_process else 2
+
+    if timestamps is None:
+        timestamps = np.arange(len(p_pred))
+
+    fig, axs = plt.subplots(n_rows, 1, sharex=True, figsize=(14, 4 * n_rows))
+
+    # ---- (1) Position error + aleatoric sigma_z ----
+    pos_err = np.linalg.norm(p_gt - p_pred, axis=1)
+    ax1 = axs[0]
+    color_err = "tab:red"
+    color_aleatoric = "tab:blue"
+
+    ax1.plot(
+        timestamps, pos_err, color=color_err, alpha=0.8, label="Position error"
+    )
+    ax1.set_ylabel("Position error (m)", color=color_err)
+    ax1.tick_params(axis="y", labelcolor=color_err)
+
+    ax1_twin = ax1.twinx()
+    ax1_twin.plot(
+        timestamps,
+        uncertainty["aleatoric_sigma_z"],
+        color=color_aleatoric,
+        alpha=0.7,
+        label=r"Aleatoric $\bar{\sigma}_z$",
+    )
+    ax1_twin.set_ylabel(r"Aleatoric $\bar{\sigma}_z$", color=color_aleatoric)
+    ax1_twin.tick_params(axis="y", labelcolor=color_aleatoric)
+
+    title = (
+        f"World Model Uncertainty — {seq_name}"
+        if seq_name
+        else "World Model Uncertainty"
+    )
+    ax1.set_title(title)
+    # Combined legend
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax1_twin.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper left")
+    ax1.grid(True, alpha=0.3)
+
+    # ---- (2) Epistemic uncertainty: measurement covariances ----
+    ax2 = axs[1]
+    if uncertainty.get("epistemic_meas_std") is not None:
+        ax2.plot(
+            timestamps,
+            uncertainty["epistemic_meas_std"],
+            color="tab:purple",
+            alpha=0.8,
+            label="Measurement cov std (MC)",
+        )
+    ax2.set_ylabel("Epistemic std")
+    ax2.set_title("Epistemic Uncertainty — Measurement Covariance Decoder")
+    ax2.legend(loc="upper left")
+    ax2.grid(True, alpha=0.3)
+
+    # Overlay position error (light) for reference
+    ax2_twin = ax2.twinx()
+    ax2_twin.plot(
+        timestamps, pos_err, color=color_err, alpha=0.2, linewidth=0.8
+    )
+    ax2_twin.set_ylabel("Position error (m)", color=color_err, alpha=0.4)
+    ax2_twin.tick_params(axis="y", labelcolor=color_err)
+
+    # ---- (3) Epistemic uncertainty: bias corrections ----
+    if has_process:
+        ax3 = axs[2]
+        if uncertainty.get("epistemic_acc_std") is not None:
+            ax3.plot(
+                timestamps,
+                uncertainty["epistemic_acc_std"],
+                color="tab:orange",
+                alpha=0.8,
+                label="Acc bias corr std (MC)",
+            )
+        if uncertainty.get("epistemic_gyro_std") is not None:
+            ax3.plot(
+                timestamps,
+                uncertainty["epistemic_gyro_std"],
+                color="tab:green",
+                alpha=0.8,
+                label="Gyro bias corr std (MC)",
+            )
+        ax3.set_ylabel("Epistemic std")
+        ax3.set_title("Epistemic Uncertainty — Bias Correction Decoders")
+        ax3.legend(loc="upper left")
+        ax3.grid(True, alpha=0.3)
+
+        ax3_twin = ax3.twinx()
+        ax3_twin.plot(
+            timestamps, pos_err, color=color_err, alpha=0.2, linewidth=0.8
+        )
+        ax3_twin.set_ylabel("Position error (m)", color=color_err, alpha=0.4)
+        ax3_twin.tick_params(axis="y", labelcolor=color_err)
+
+    axs[-1].set_xlabel("Time (s)")
+    fig.tight_layout()
+    return fig

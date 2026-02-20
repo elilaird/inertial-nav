@@ -68,7 +68,9 @@ class Trainer:
         self.bptt_chunk_size = bptt_cfg.get("chunk_size", 500)
 
         # KL regularization (LatentWorldModel)
-        wm_cfg = (self.model_cfg or {}).get("networks", {}).get("world_model", {})
+        wm_cfg = (
+            (self.model_cfg or {}).get("networks", {}).get("world_model", {})
+        )
         self.kl_weight = wm_cfg.get("kl_weight", 0.0)
         self.kl_anneal_epochs = wm_cfg.get("kl_anneal_epochs", 50)
         self.current_epoch = 0
@@ -187,9 +189,14 @@ class Trainer:
             epoch_metrics["train/epoch_time"] = elapsed
             self.callbacks.on_epoch_end(self, epoch, epoch_metrics)
 
+            loss_str = f"loss: {epoch_metrics.get('train/loss_epoch', float('nan')):.5f}"
+            if "train/base_loss_epoch" in epoch_metrics:
+                loss_str += (
+                    f" (base: {epoch_metrics['train/base_loss_epoch']:.5f}"
+                    f", kl: {epoch_metrics['train/kl_epoch']:.5f})"
+                )
             print(
-                f"Epoch {epoch:3d} | loss: {epoch_metrics.get('train/loss_epoch', float('nan')):.5f} "
-                f"| time: {elapsed:.1f}s",
+                f"Epoch {epoch:3d} | {loss_str} | time: {elapsed:.1f}s",
                 flush=True,
             )
 
@@ -259,6 +266,7 @@ class Trainer:
 
         epoch_loss = 0.0
         epoch_loss_sum = 0.0  # sum across all valid sequences this epoch
+        epoch_losses = {}  # per-component loss sums (e.g. "kl")
         n_sequences = 0
         n_skipped = 0
         n_optimizer_steps = 0
@@ -273,7 +281,8 @@ class Trainer:
 
             for j, dataset_name in enumerate(sampled):
                 Ns = train_filter[dataset_name]
-                loss = self._train_step(dataset_name, Ns)
+                result = self._train_step(dataset_name, Ns)
+                loss = result["loss"]
 
                 step_metrics = {"train/sequence": dataset_name}
 
@@ -290,10 +299,20 @@ class Trainer:
                 batch_count += 1
                 n_sequences += 1
                 epoch_loss_sum += loss.item()
+                for k, v in result["losses"].items():
+                    epoch_losses[k] = epoch_losses.get(k, 0.0) + v
                 step_metrics["train/loss_step"] = loss.item()
+                for k, v in result["losses"].items():
+                    if k != "loss" and v > 0:
+                        step_metrics[f"train/{k}_step"] = v
+                if "kl" in result["losses"] and result["losses"]["kl"] > 0:
+                    step_metrics["train/base_loss_step"] = (
+                        loss.item() - result["losses"]["kl"]
+                    )
                 cprint(
                     f"  [step {step}, seq {j}] {dataset_name}: "
-                    f"loss={loss.item():.5f}",
+                    f"total loss={loss.item():.5f} "
+                    + ", ".join(f"{k}={v:.5f}" for k, v in result["losses"].items()),
                     flush=True,
                 )
 
@@ -337,14 +356,23 @@ class Trainer:
             }
 
         avg_grad_norm = float(np.mean(grad_norms)) if grad_norms else 0.0
+        avg_epoch_loss = epoch_loss / max(n_optimizer_steps, 1)
         metrics = {
-            "train/loss_epoch": epoch_loss / max(n_optimizer_steps, 1),
+            "train/loss_epoch": avg_epoch_loss,
             "train/loss_sum": epoch_loss_sum,
             "train/grad_norm": avg_grad_norm,
             "train/sequences_skipped": n_skipped,
             "train/n_sequences": n_sequences,
             "train/n_optimizer_steps": n_optimizer_steps,
         }
+        denom = max(n_sequences, 1)
+        for k, v in epoch_losses.items():
+            if k != "loss" and v > 0:
+                metrics[f"train/{k}_epoch"] = v / denom
+        if "kl" in epoch_losses and epoch_losses["kl"] > 0:
+            metrics["train/base_loss_epoch"] = (
+                avg_epoch_loss - epoch_losses["kl"] / denom
+            )
         for i, pg in enumerate(self.optimizer.param_groups):
             metrics[f"train/lr_group{i}"] = pg["lr"]
 
@@ -384,6 +412,7 @@ class Trainer:
         rng = np.random.default_rng(self.seed + epoch)
 
         epoch_loss = 0.0
+        epoch_losses = {}  # per-component loss sums (e.g. "loss", "kl")
         n_optimizer_steps = 0
         n_sequences = 0
         n_skipped = 0
@@ -395,11 +424,9 @@ class Trainer:
 
             for j, dataset_name in enumerate(sampled):
                 Ns = train_filter[dataset_name]
-                seq_loss, seq_steps, seq_gnorms, seq_skipped, seq_sigma_z = (
-                    self._train_step_bptt(dataset_name, Ns, step, j)
-                )
+                result = self._train_step_bptt(dataset_name, Ns, step, j)
 
-                if seq_steps == 0:
+                if result["n_valid"] == 0:
                     n_skipped += 1
                     cprint(
                         f"  [step {step}, seq {j}] {dataset_name}: "
@@ -409,16 +436,23 @@ class Trainer:
                     )
                     continue
 
-                epoch_loss += seq_loss
-                n_optimizer_steps += seq_steps
+                epoch_loss += result["total_loss"]
+                for k, v in result["losses"].items():
+                    epoch_losses[k] = epoch_losses.get(k, 0.0) + v
+                n_optimizer_steps += result["n_valid"]
                 n_sequences += 1
-                n_skipped += seq_skipped
-                grad_norms.extend(seq_gnorms)
-                sigma_z_epoch.extend(seq_sigma_z)
+                n_skipped += result["n_skipped"]
+                grad_norms.extend(result["gnorms"])
+                sigma_z_epoch.extend(result["sigma_z"])
+                n_valid = result["n_valid"]
+                losses_str = ", ".join(
+                    f"{k}={v / n_valid:.5f}" for k, v in result["losses"].items()
+                )
                 cprint(
                     f"  [step {step}, seq {j}] {dataset_name}: "
-                    f"loss={seq_loss / seq_steps:.5f} "
-                    f"({seq_steps} chunks, {seq_skipped} skipped)",
+                    f"total loss={result['total_loss'] / n_valid:.5f} "
+                    f"{losses_str} "
+                    f"({n_valid} chunks, {result['n_skipped']} skipped)",
                     flush=True,
                 )
 
@@ -432,14 +466,23 @@ class Trainer:
             }
 
         avg_grad_norm = float(np.mean(grad_norms)) if grad_norms else 0.0
+        avg_epoch_loss = epoch_loss / max(n_optimizer_steps, 1)
         metrics = {
-            "train/loss_epoch": epoch_loss / max(n_optimizer_steps, 1),
+            "train/loss_epoch": avg_epoch_loss,
             "train/grad_norm": avg_grad_norm,
             "train/sequences_skipped": n_skipped,
             "train/n_sequences": n_sequences,
             "train/n_optimizer_steps": n_optimizer_steps,
             "train/bptt_chunk_size": self.bptt_chunk_size,
         }
+        denom = max(n_optimizer_steps, 1)
+        for k, v in epoch_losses.items():
+            if k != "loss" and v > 0:
+                metrics[f"train/{k}_epoch"] = v / denom
+        if "kl" in epoch_losses and epoch_losses["kl"] > 0:
+            metrics["train/base_loss_epoch"] = (
+                avg_epoch_loss - epoch_losses["kl"] / denom
+            )
         if sigma_z_epoch:
             metrics["train/sigma_z"] = float(np.mean(sigma_z_epoch))
         for i, pg in enumerate(self.optimizer.param_groups):
@@ -465,7 +508,8 @@ class Trainer:
             Ns:           [start_idx, end_idx] frame range.
 
         Returns:
-            Tuple (total_loss_float, n_valid_chunks, grad_norm_list, n_skipped_chunks).
+            Dict with 'total_loss', 'n_valid', 'gnorms', 'n_skipped',
+            'sigma_z', and 'losses' (per-component breakdown).
         """
         from src.core.torch_iekf import TorchIEKF
 
@@ -487,14 +531,21 @@ class Trainer:
 
         list_rpe = self.dataset.list_rpe.get(dataset_name)
         if list_rpe is None:
-            return 0.0, 0, [], 1
+            return {
+                "total_loss": 0.0,
+                "n_valid": 0,
+                "gnorms": [],
+                "n_skipped": 1,
+                "sigma_z": [],
+                "losses": {},
+            }
 
         # Initialise filter state (outside any chunk graph)
         self.model.set_Q()
         state = self.model.init_state(t, u, v_gt, ang_gt[0])
         state = TorchIEKF.detach_state(state)
 
-        total_loss = 0.0
+        totals = {"loss": 0.0, "kl": 0.0}
         n_valid = 0
         n_skipped = 0
         gnorms = []
@@ -551,15 +602,26 @@ class Trainer:
             )
 
             # KL regularization (LatentWorldModel)
+            chunk_kl = 0.0
             if (
                 self.kl_weight > 0
                 and wm_c is not None
                 and wm_c.mu_z is not None
             ):
-                kl = -0.5 * (
-                    1 + wm_c.log_var_z - wm_c.mu_z.pow(2) - wm_c.log_var_z.exp()
-                ).mean()
-                anneal = min(1.0, self.current_epoch / max(1, self.kl_anneal_epochs))
+                kl = (
+                    -0.5
+                    * (
+                        1
+                        + wm_c.log_var_z
+                        - wm_c.mu_z.pow(2)
+                        - wm_c.log_var_z.exp()
+                    ).mean()
+                )
+                # anneal = min(
+                #     1.0, self.current_epoch / max(1, self.kl_anneal_epochs)
+                # )
+                anneal = 1.0
+                chunk_kl = (self.kl_weight * anneal * kl).item()
                 loss = loss + self.kl_weight * anneal * kl
 
             if loss == -1 or torch.isnan(loss):
@@ -588,7 +650,8 @@ class Trainer:
                 self.optimizer.step()
                 self.optimizer.zero_grad()
                 n_valid += 1
-                total_loss += loss.item()
+                totals["loss"] += loss.item()
+                totals["kl"] += chunk_kl
                 gnorms.append(float(g_norm))
                 if wm_c is not None and wm_c.log_var_z is not None:
                     sigma_z_vals.append(
@@ -601,7 +664,14 @@ class Trainer:
             if self.fast_dev_run:
                 break
 
-        return total_loss, n_valid, gnorms, n_skipped, sigma_z_vals
+        return {
+            "total_loss": totals["loss"],
+            "n_valid": n_valid,
+            "gnorms": gnorms,
+            "n_skipped": n_skipped,
+            "sigma_z": sigma_z_vals,
+            "losses": totals,
+        }
 
     def _train_step(self, dataset_name, Ns):
         """
@@ -612,7 +682,7 @@ class Trainer:
             Ns: [start_idx, end_idx] frame range.
 
         Returns:
-            Loss tensor, or -1 if computation failed.
+            Dict with 'loss' (tensor or -1) and 'losses' (component breakdown).
         """
         # Load and prepare data
         t, ang_gt, p_gt, v_gt, u = self.dataset.get_data(dataset_name)
@@ -673,24 +743,35 @@ class Trainer:
         # Compute loss
         list_rpe = self.dataset.list_rpe.get(dataset_name)
         if list_rpe is None:
-            return -1
+            return {"loss": -1, "losses": {}}
 
         loss = self.loss_fn(Rot, p, None, None, list_rpe=list_rpe, N0=N0)
 
         # KL regularization (LatentWorldModel)
+        losses = {}
         if (
             isinstance(loss, torch.Tensor)
             and self.kl_weight > 0
             and wm_out is not None
             and wm_out.mu_z is not None
         ):
-            kl = -0.5 * (
-                1 + wm_out.log_var_z - wm_out.mu_z.pow(2) - wm_out.log_var_z.exp()
-            ).mean()
-            anneal = min(1.0, self.current_epoch / max(1, self.kl_anneal_epochs))
+            kl = (
+                -0.5
+                * (
+                    1
+                    + wm_out.log_var_z
+                    - wm_out.mu_z.pow(2)
+                    - wm_out.log_var_z.exp()
+                ).mean()
+            )
+            # anneal = min(
+            #     1.0, self.current_epoch / max(1, self.kl_anneal_epochs)
+            # )
+            anneal = 1.0
+            losses["kl"] = (self.kl_weight * anneal * kl).item()
             loss = loss + self.kl_weight * anneal * kl
 
-        return loss
+        return {"loss": loss, "losses": losses}
 
     def _prepare_loss_data(self):
         """Precompute RPE ground truth data for all training sequences."""

@@ -4,14 +4,23 @@ LatentWorldModel: probabilistic latent variable world model for the IEKF.
 Architecture:
     IMUFeatureExtractor (shared CNN) → FC encoder head → (mu_z, log_var_z)
     Reparameterization: z = mu_z + exp(0.5 * log_var_z) * epsilon
-    ProcessDecoder(z)      → delta_b_omega, delta_b_a, Q_bias_scale
-    MeasurementDecoder(z)  → N_n (measurement covariance)
+    ProcessDecoder(z_sample)  → delta_b_omega, delta_b_a, Q_bias_scale
+    MeasurementDecoder(mu_z)  → N_n (measurement covariance)
 
-The encoder runs once per timestep.  Both decoders condition on the same
-z sample drawn from the encoder's output distribution.
+The two decoders use different z representations:
 
-At eval / deterministic mode (torch.no_grad): z = mu_z (epsilon = 0).
-At training: z sampled via reparameterization trick.
+  - **Measurement decoder** receives deterministic ``mu_z``.  N_n is already
+    a covariance, so stochasticity in z would create variance *in* a noise
+    parameter with no natural home in the IEKF update.  The decoder learns
+    to output large N_n when mu_z is near the prior (uncertain context),
+    encoding the right epistemic behavior directly in its weights.
+
+  - **Process decoder** receives a stochastic sample ``z_sample`` via the
+    reparameterization trick.  The variance across samples propagates
+    context uncertainty into ``Q_bias_scale``, inflating the bias noise
+    covariance when the correction itself is uncertain.
+
+At eval / deterministic mode (torch.no_grad): both decoders use mu_z.
 
 The KL term KL(q(z|x) || N(0,I)) is returned via mu_z / log_var_z fields
 in WorldModelOutput and added to the loss in the trainer.
@@ -114,8 +123,13 @@ class ProcessDecoder(nn.Module):
     When the network outputs zero: delta_b = 0, Q_bias_scale = 1 (identity).
     """
 
-    def __init__(self, latent_dim: int, alpha: float = 3.0,
-                 weight_scale: float = 0.01, bias_scale: float = 0.01):
+    def __init__(
+        self,
+        latent_dim: int,
+        alpha: float = 3.0,
+        weight_scale: float = 0.01,
+        bias_scale: float = 0.01,
+    ):
         super().__init__()
         self.alpha = alpha
         self.net = nn.Sequential(
@@ -165,8 +179,13 @@ class MeasurementDecoder(nn.Module):
     When the network outputs zero: N_n = cov0_measurement (baseline).
     """
 
-    def __init__(self, latent_dim: int, beta: float = 3.0,
-                 weight_scale: float = 0.01, bias_scale: float = 0.01):
+    def __init__(
+        self,
+        latent_dim: int,
+        beta: float = 3.0,
+        weight_scale: float = 0.01,
+        bias_scale: float = 0.01,
+    ):
         super().__init__()
         self.beta = beta
         self.net = nn.Sequential(
@@ -182,7 +201,9 @@ class MeasurementDecoder(nn.Module):
                 layer.weight.data.mul_(ws)
                 layer.bias.data.mul_(bs)
 
-    def forward(self, z: torch.Tensor, cov0_measurement: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, z: torch.Tensor, cov0_measurement: torch.Tensor
+    ) -> torch.Tensor:
         """
         Args:
             z:                (N, latent_dim)
@@ -191,7 +212,9 @@ class MeasurementDecoder(nn.Module):
             (N, 2) measurement covariance per timestep
         """
         raw = self.net(z)  # (N, 2)
-        return cov0_measurement.unsqueeze(0) * (10 ** (self.beta * torch.tanh(raw)))
+        return cov0_measurement.unsqueeze(0) * (
+            10 ** (self.beta * torch.tanh(raw))
+        )
 
 
 class LatentWorldModel(BaseCovarianceNet):
@@ -292,26 +315,29 @@ class LatentWorldModel(BaseCovarianceNet):
         mu_z = enc_out[:, : self.latent_dim]
         log_var_z = enc_out[:, self.latent_dim :]
 
-        # Reparameterization: stochastic during training, deterministic at eval
+        # Reparameterization: stochastic sample for process decoder only.
+        # Measurement decoder always uses deterministic mu_z (see module docstring).
         if self.training:
             epsilon = torch.randn_like(mu_z)
-            z = mu_z + torch.exp(0.5 * log_var_z) * epsilon
+            z_sample = mu_z + torch.exp(0.5 * log_var_z) * epsilon
         else:
-            z = mu_z
+            z_sample = mu_z
 
         out = WorldModelOutput(mu_z=mu_z, log_var_z=log_var_z)
 
-        # ---- measurement decoder ----
+        # ---- measurement decoder (deterministic mu_z) ----
         if self.measurement_dec is not None and iekf is not None:
-            out.measurement_covs = self.measurement_dec(z, iekf.cov0_measurement)
+            out.measurement_covs = self.measurement_dec(
+                mu_z, iekf.cov0_measurement
+            )
 
-        # ---- process decoder ----
+        # ---- process decoder (stochastic z_sample) ----
         if self.process_dec is not None and iekf is not None:
             # Derive sigma_bw and sigma_ba from the IEKF's Q matrix
             sigma_bw = iekf.Q[9, 9].sqrt()
             sigma_ba = iekf.Q[12, 12].sqrt()
             delta_b_omega, delta_b_a, Q_bias_scale = self.process_dec(
-                z, sigma_bw, sigma_ba
+                z_sample, sigma_bw, sigma_ba
             )
             out.gyro_bias_corrections = delta_b_omega
             out.acc_bias_corrections = delta_b_a

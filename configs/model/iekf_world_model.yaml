@@ -77,7 +77,7 @@ networks:
 
     # KL regularization
     kl_weight: 1.0e-4       # lambda in: Loss = t_rel + lambda * KL(q(z|x)||N(0,I))
-    kl_anneal_epochs: 50    # linear anneal from 0 to kl_weight over this many epochs
+    kl_anneal_epochs: 1    # linear anneal from 0 to kl_weight over this many epochs
 
     architecture:
       # Shared CNN encoder backbone
@@ -103,8 +103,8 @@ networks:
         alpha: 3.0            # bound: corrections within ±alpha*sigma_{bw,ba}
 
       # Near-zero init so decoders start as identity (no correction initially)
-      weight_scale: 0.01
-      bias_scale: 0.01
+      weight_scale: 1.0 # 0.01
+      bias_scale: 1.0 #0.01
 
 # ------------------------------------------------------------------
 # Optimizer param-groups for the world model

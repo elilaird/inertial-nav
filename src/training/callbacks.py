@@ -11,6 +11,7 @@ import torch
 from termcolor import cprint
 import wandb
 
+
 class Callback:
     """Base callback with no-op hooks."""
 
@@ -180,7 +181,6 @@ class WandBLogger(Callback):
     def on_epoch_end(self, trainer, epoch, metrics):
         if self.run is None:
             return
-        
 
         log_dict = {k: v for k, v in metrics.items()}
         log_dict["epoch"] = epoch
@@ -191,7 +191,6 @@ class WandBLogger(Callback):
             return
         if batch_idx % self._batch_log_freq != 0:
             return
-        
 
         wandb.log(metrics)
 
@@ -222,6 +221,7 @@ class TestEvalCallback(Callback):
             plot_detailed_errors,
             plot_body_frame_velocity,
             plot_covariance_with_imu,
+            plot_world_model_uncertainty,
         )
         import matplotlib.pyplot as plt
 
@@ -258,7 +258,6 @@ class TestEvalCallback(Callback):
 
                 # Generate validation plots for WandB
                 try:
-                    
 
                     timestamps = results["t"] - results["t"][0]
                     p_imu = results.get("p_imu")
@@ -313,6 +312,19 @@ class TestEvalCallback(Callback):
                     metrics[f"val_eval/{seq_name}/covs_with_imu"] = (
                         wandb.Image(fig_cov_imu)
                     )
+
+                    # World model uncertainty plot (if available)
+                    if results.get("uncertainty") is not None:
+                        fig_unc = plot_world_model_uncertainty(
+                            results["uncertainty"],
+                            results["p"],
+                            results["p_gt"],
+                            timestamps=timestamps,
+                            seq_name=seq_name,
+                        )
+                        metrics[f"val_eval/{seq_name}/wm_uncertainty"] = (
+                            wandb.Image(fig_unc)
+                        )
 
                     plt.close("all")
                 except Exception:

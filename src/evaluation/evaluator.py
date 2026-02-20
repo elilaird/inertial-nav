@@ -80,6 +80,110 @@ def imu_dead_reckoning(t, u, ang0, v0, g=np.array([0.0, 0.0, -9.80655])):
     return Rot, p, v
 
 
+# ------------------------------------------------------------------
+# World model uncertainty estimation
+# ------------------------------------------------------------------
+
+_DEFAULT_MC_SAMPLES = 20
+
+
+def _compute_world_model_uncertainty(
+    iekf, u, wm_out_deterministic, n_mc=_DEFAULT_MC_SAMPLES
+):
+    """
+    Compute epistemic and aleatoric uncertainty from the world model.
+
+    Epistemic uncertainty is measured by drawing *n_mc* z samples from
+    q(z|x) and computing the standard deviation of each decoder output
+    across samples.
+
+    Aleatoric uncertainty is the encoder's predicted sigma_z =
+    exp(0.5 * log_var_z) per timestep — the width of the latent
+    posterior, reflecting irreducible noise the model has learned.
+
+    Args:
+        iekf:  TorchIEKF instance (provides world_model and normalize_u).
+        u:     Raw IMU tensor (N, 6) on the correct device.
+        wm_out_deterministic: WorldModelOutput from the deterministic
+            (eval-mode) forward pass, or None.
+        n_mc:  Number of Monte Carlo samples for epistemic uncertainty.
+
+    Returns:
+        Dict with numpy arrays, or None if no world model is present.
+        Keys (all (N,) numpy):
+            aleatoric_sigma_z   – mean sigma across latent dims per timestep
+            epistemic_meas_std  – std of measurement cov predictions (mean
+                                  across output dims) per timestep
+            epistemic_acc_std   – std of acc bias corrections (mean across
+                                  axes) per timestep, or None
+            epistemic_gyro_std  – std of gyro bias corrections (mean across
+                                  axes) per timestep, or None
+    """
+    if iekf.world_model is None or wm_out_deterministic is None:
+        return None
+
+    wm = iekf.world_model
+
+    # --- aleatoric: sigma_z from deterministic pass ---
+    # log_var_z: (N, latent_dim)
+    log_var_z = wm_out_deterministic.log_var_z
+    sigma_z = torch.exp(0.5 * log_var_z)  # (N, latent_dim)
+    aleatoric_sigma_z = sigma_z.mean(dim=1).cpu().numpy()  # (N,)
+
+    # --- epistemic: MC sampling through decoders ---
+    mu_z = wm_out_deterministic.mu_z  # (N, latent_dim)
+
+    # Collect MC samples of decoder outputs
+    meas_samples = []
+    acc_samples = []
+    gyro_samples = []
+
+    with torch.no_grad():
+        for _ in range(n_mc):
+            eps = torch.randn_like(mu_z)
+            z_sample = mu_z + sigma_z * eps
+
+            if wm.measurement_dec is not None:
+                meas_cov = wm.measurement_dec(z_sample, iekf.cov0_measurement)
+                meas_samples.append(meas_cov)  # (N, 2)
+
+            if wm.process_dec is not None:
+                sigma_bw = iekf.Q[9, 9].sqrt()
+                sigma_ba = iekf.Q[12, 12].sqrt()
+                d_bw, d_ba, _ = wm.process_dec(z_sample, sigma_bw, sigma_ba)
+                acc_samples.append(d_ba)  # (N, 3)
+                gyro_samples.append(d_bw)  # (N, 3)
+
+    result = {"aleatoric_sigma_z": aleatoric_sigma_z}
+
+    if meas_samples:
+        # (n_mc, N, 2) → std over MC dim → mean over output dims → (N,)
+        stacked = torch.stack(meas_samples, dim=0)
+        result["epistemic_meas_std"] = (
+            stacked.std(dim=0).mean(dim=1).cpu().numpy()
+        )
+    else:
+        result["epistemic_meas_std"] = None
+
+    if acc_samples:
+        stacked_acc = torch.stack(acc_samples, dim=0)
+        result["epistemic_acc_std"] = (
+            stacked_acc.std(dim=0).mean(dim=1).cpu().numpy()
+        )
+    else:
+        result["epistemic_acc_std"] = None
+
+    if gyro_samples:
+        stacked_gyro = torch.stack(gyro_samples, dim=0)
+        result["epistemic_gyro_std"] = (
+            stacked_gyro.std(dim=0).mean(dim=1).cpu().numpy()
+        )
+    else:
+        result["epistemic_gyro_std"] = None
+
+    return result
+
+
 def evaluate_sequence(iekf, dataset, dataset_name):
     """
     Run the filter on *dataset_name* and return predictions + metrics.
@@ -144,6 +248,9 @@ def evaluate_sequence(iekf, dataset, dataset_name):
             gyro_corrections=gyro_corrections,
             process_noise_scaling=process_noise_scaling,
         )
+
+    # ---- World model uncertainty (epistemic + aleatoric) ----
+    uncertainty = _compute_world_model_uncertainty(iekf, u, wm_out)
 
     # ---- numpy conversion ----
     Rot = Rot.cpu().numpy()
@@ -210,6 +317,7 @@ def evaluate_sequence(iekf, dataset, dataset_name):
         ),
         "t": t_np,
         "measurements_covs": measurements_covs_np,
+        "uncertainty": uncertainty,
         "name": dataset_name,
     }
 
