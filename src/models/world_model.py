@@ -268,7 +268,7 @@ class LatentWorldModel(BaseCovarianceNet):
 
         # ---- encoder FC head: cnn_channels → 2 * latent_dim (no activation) ----
         # self.encoder_fc = nn.Linear(cnn_channels, 2 * latent_dim)
-        self.encoder_fn = nn.Sequential(
+        self.encoder_fc = nn.Sequential(
             nn.Linear(cnn_channels, 2 * latent_dim),
             nn.ReLU(),
             nn.Linear(2 * latent_dim, 2 * latent_dim),
