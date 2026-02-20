@@ -17,6 +17,17 @@ param_groups:
       lr: 1.0e-4
       weight_decay: 1.0e-8
 
+  world_model:
+    feature_extractor:
+      lr: 1.0e-4
+      weight_decay: 0.0
+    measurement_decoder:
+      lr: 1.0e-4
+      weight_decay: 0.0
+    process_decoder:
+      lr: 1.0e-4
+      weight_decay: 0.0
+
 # Learning rate scheduling
 scheduler:
   enabled: false

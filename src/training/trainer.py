@@ -312,7 +312,9 @@ class Trainer:
                 cprint(
                     f"  [step {step}, seq {j}] {dataset_name}: "
                     f"total loss={loss.item():.5f} "
-                    + ", ".join(f"{k}={v:.5f}" for k, v in result["losses"].items()),
+                    + ", ".join(
+                        f"{k}={v:.5f}" for k, v in result["losses"].items()
+                    ),
                     flush=True,
                 )
 
@@ -446,7 +448,8 @@ class Trainer:
                 sigma_z_epoch.extend(result["sigma_z"])
                 n_valid = result["n_valid"]
                 losses_str = ", ".join(
-                    f"{k}={v / n_valid:.5f}" for k, v in result["losses"].items()
+                    f"{k}={v / n_valid:.5f}"
+                    for k, v in result["losses"].items()
                 )
                 cprint(
                     f"  [step {step}, seq {j}] {dataset_name}: "
@@ -624,6 +627,12 @@ class Trainer:
                 chunk_kl = (self.kl_weight * anneal * kl).item()
                 loss = loss + self.kl_weight * anneal * kl
 
+            # Loss clamping and skipping
+            max_loss = self.loss_cfg.get("max_loss", None)
+            if max_loss is not None and isinstance(loss, torch.Tensor):
+                if loss.item() > max_loss:
+                    loss = -1
+
             if loss == -1 or torch.isnan(loss):
                 n_skipped += 1
                 cprint(
@@ -770,6 +779,12 @@ class Trainer:
             anneal = 1.0
             losses["kl"] = (self.kl_weight * anneal * kl).item()
             loss = loss + self.kl_weight * anneal * kl
+
+        # Loss clamping and skipping
+        max_loss = self.loss_cfg.get("max_loss", None)
+        if max_loss is not None and isinstance(loss, torch.Tensor):
+            if loss.item() > max_loss:
+                loss = -1
 
         return {"loss": loss, "losses": losses}
 

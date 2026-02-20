@@ -18,7 +18,7 @@ sampling:
     distance_windows: [100, 200, 300, 400, 500, 600, 700, 800]
 
 # Loss validation
-max_loss: 2.0e1 # Skip batch if loss exceeds this threshold
+max_loss: 5.0 # Skip batch if loss exceeds this threshold
 
 # Normalization
 normalize: true # Normalize by number of samples
