@@ -86,12 +86,22 @@ class IMUFeatureExtractor(nn.Module):
             nn.Conv1d(input_channels, cnn_channels, kernel_size),
             nn.ReplicationPad1d(kernel_size - 1),
             nn.ReLU(),
+            nn.LayerNorm(
+                [
+                    cnn_channels,
+                ]
+            ),
             nn.Dropout(p=dropout),
             nn.Conv1d(
                 cnn_channels, cnn_channels, kernel_size, dilation=dilation
             ),
             nn.ReplicationPad1d(kernel_size - 1),
             nn.ReLU(),
+            nn.LayerNorm(
+                [
+                    cnn_channels,
+                ]
+            ),
             nn.Dropout(p=dropout),
         )
 
@@ -135,6 +145,7 @@ class ProcessDecoder(nn.Module):
         self.net = nn.Sequential(
             nn.Linear(latent_dim, 32),
             nn.ReLU(),
+            nn.LayerNorm(32),
             nn.Linear(32, 9),
         )
         self._small_init(weight_scale, bias_scale)
@@ -191,6 +202,7 @@ class MeasurementDecoder(nn.Module):
         self.net = nn.Sequential(
             nn.Linear(latent_dim, 32),
             nn.ReLU(),
+            nn.LayerNorm(32),
             nn.Linear(32, 2),
         )
         self._small_init(weight_scale, bias_scale)

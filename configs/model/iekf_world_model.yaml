@@ -85,7 +85,7 @@ networks:
       cnn_channels: 32
       kernel_size: 5
       cnn_dilation: 3
-      cnn_dropout: 0.5
+      cnn_dropout: 0.1 # from 0.5
       latent_dim: 8           # dimension of z; start small to avoid KITTI overfitting
 
       # MeasurementDecoder: z → N_n (replaces standalone MeasurementCovNet)
@@ -103,8 +103,8 @@ networks:
         alpha: 3.0            # bound: corrections within ±alpha*sigma_{bw,ba}
 
       # Near-zero init so decoders start as identity (no correction initially)
-      weight_scale: 0.01
-      bias_scale: 0.01
+      weight_scale: 0.1 # from 0.01
+      bias_scale: 0.1 # from 0.01
 
 # ------------------------------------------------------------------
 # Optimizer param-groups for the world model

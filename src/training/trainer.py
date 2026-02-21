@@ -780,11 +780,10 @@ class Trainer:
             losses["kl"] = (self.kl_weight * anneal * kl).item()
             loss = loss + self.kl_weight * anneal * kl
 
-        # Loss clamping and skipping
+        # Loss clamping (Huber-like): clamp loss to max_loss so gradients still flow
         max_loss = self.loss_cfg.get("max_loss", None)
         if max_loss is not None and isinstance(loss, torch.Tensor):
-            if loss.item() > max_loss:
-                loss = -1
+            loss = torch.clamp(loss, max=max_loss)
 
         return {"loss": loss, "losses": losses}
 
