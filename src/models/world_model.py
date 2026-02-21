@@ -86,22 +86,14 @@ class IMUFeatureExtractor(nn.Module):
             nn.Conv1d(input_channels, cnn_channels, kernel_size),
             nn.ReplicationPad1d(kernel_size - 1),
             nn.ReLU(),
-            nn.LayerNorm(
-                [
-                    cnn_channels,
-                ]
-            ),
+            nn.BatchNorm1d(cnn_channels),
             nn.Dropout(p=dropout),
             nn.Conv1d(
                 cnn_channels, cnn_channels, kernel_size, dilation=dilation
             ),
             nn.ReplicationPad1d(kernel_size - 1),
             nn.ReLU(),
-            nn.LayerNorm(
-                [
-                    cnn_channels,
-                ]
-            ),
+            nn.BatchNorm1d(cnn_channels),
             nn.Dropout(p=dropout),
         )
 
