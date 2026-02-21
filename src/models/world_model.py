@@ -352,6 +352,97 @@ class LatentWorldModel(BaseCovarianceNet):
 
         return out
 
+    def forward_batched(self, u: torch.Tensor, iekf, M: int) -> WorldModelOutput:
+        """
+        Encoder runs once, sample M z trajectories, decode in batch.
+
+        For the particle filter: each particle gets its own stochastic z sample
+        from the shared encoder posterior. Both decoders use stochastic z per
+        particle (unlike single-instance forward where measurement decoder uses
+        deterministic mu_z).
+
+        Args:
+            u:    (1, C, N) normalized IMU tensor.
+            iekf: TorchIEKF instance (provides ``cov0_measurement`` and ``Q``).
+            M:    Number of particles.
+
+        Returns:
+            ``WorldModelOutput`` with (M, N, dim) shaped tensors for per-particle
+            outputs, and (N, latent_dim) shaped mu_z/log_var_z for shared KL.
+        """
+        features = self.feature_extractor(u)          # (N, 32)
+        enc_out = self.encoder_fc(features)            # (N, 2*latent_dim)
+        mu_z = enc_out[:, :self.latent_dim]             # (N, 8)
+        log_var_z = enc_out[:, self.latent_dim:]        # (N, 8)
+        sigma_z = torch.exp(0.5 * log_var_z)           # (N, 8)
+
+        N = mu_z.shape[0]
+
+        # Sample M z trajectories from shared posterior
+        if self.training:
+            epsilon = torch.randn(M, N, self.latent_dim, device=mu_z.device)
+            z_samples = mu_z.unsqueeze(0) + sigma_z.unsqueeze(0) * epsilon  # (M, N, 8)
+        else:
+            z_samples = mu_z.unsqueeze(0).expand(M, -1, -1)  # (M, N, 8)
+
+        # Flatten for batched decoder forward: (M*N, latent_dim)
+        z_flat = z_samples.reshape(-1, self.latent_dim)
+
+        out = WorldModelOutput(mu_z=mu_z, log_var_z=log_var_z)
+
+        # Measurement decoder: stochastic z per particle
+        if self.measurement_dec is not None and iekf is not None:
+            meas_flat = self.measurement_dec(z_flat, iekf.cov0_measurement)  # (M*N, 2)
+            out.measurement_covs = meas_flat.view(M, N, 2)
+
+        # Process decoder: stochastic z per particle
+        if self.process_dec is not None and iekf is not None:
+            sigma_bw = iekf.Q[9, 9].sqrt()
+            sigma_ba = iekf.Q[12, 12].sqrt()
+            delta_b_omega, delta_b_a, Q_bias_scale = self.process_dec(
+                z_flat, sigma_bw, sigma_ba
+            )
+            out.gyro_bias_corrections = delta_b_omega.view(M, N, 3)
+            out.acc_bias_corrections = delta_b_a.view(M, N, 3)
+            out.bias_noise_scaling = Q_bias_scale.view(M, N, 3)
+
+        return out
+
+    def decode(self, z: torch.Tensor, iekf) -> WorldModelOutput:
+        """
+        Decode from pre-computed z values (no encoder call).
+
+        Used by the transition model path: z values come from the transition
+        model rather than the encoder.
+
+        Args:
+            z:    (..., latent_dim) latent values (any batch shape).
+            iekf: TorchIEKF instance.
+
+        Returns:
+            WorldModelOutput with decoded fields matching z's batch shape.
+        """
+        orig_shape = z.shape[:-1]
+        z_flat = z.reshape(-1, self.latent_dim)
+
+        out = WorldModelOutput()
+
+        if self.measurement_dec is not None and iekf is not None:
+            meas = self.measurement_dec(z_flat, iekf.cov0_measurement)
+            out.measurement_covs = meas.view(*orig_shape, 2)
+
+        if self.process_dec is not None and iekf is not None:
+            sigma_bw = iekf.Q[9, 9].sqrt()
+            sigma_ba = iekf.Q[12, 12].sqrt()
+            delta_b_omega, delta_b_a, Q_bias_scale = self.process_dec(
+                z_flat, sigma_bw, sigma_ba
+            )
+            out.gyro_bias_corrections = delta_b_omega.view(*orig_shape, 3)
+            out.acc_bias_corrections = delta_b_a.view(*orig_shape, 3)
+            out.bias_noise_scaling = Q_bias_scale.view(*orig_shape, 3)
+
+        return out
+
     def get_output_dim(self):
         """Returns latent dimension."""
         return self.latent_dim

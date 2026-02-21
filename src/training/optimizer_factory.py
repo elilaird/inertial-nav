@@ -109,6 +109,17 @@ def _build_param_groups(cfg, model):
             }
         )
 
+    # TransitionModel
+    tm_cfg = groups_cfg.get("transition_model", None)
+    if tm_cfg and model.transition_model is not None:
+        param_groups.append(
+            {
+                "params": model.transition_model.parameters(),
+                "lr": tm_cfg.get("lr", 1e-4),
+                "weight_decay": tm_cfg.get("weight_decay", 0.0),
+            }
+        )
+
     return param_groups
 
 

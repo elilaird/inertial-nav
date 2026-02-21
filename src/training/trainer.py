@@ -12,6 +12,7 @@ from termcolor import cprint
 
 from src.core.torch_iekf import TorchIEKF
 from src.losses import get_loss
+from src.particle_filter import ParticleFilter
 from src.training.optimizer_factory import build_optimizer, build_scheduler
 from src.training.callbacks import (
     CallbackList,
@@ -99,6 +100,25 @@ class Trainer:
             self.optimizer_cfg.get("scheduler", {}), self.optimizer
         )
         self.callbacks = self._build_callbacks()
+
+        # Particle filter config
+        pf_cfg = (self.model_cfg or {}).get("particle_filter", {})
+        self.use_particle_filter = pf_cfg.get("enabled", False)
+        self.pf_num_particles_train = pf_cfg.get("num_particles_train", 5)
+        self.pf_num_particles_eval = pf_cfg.get("num_particles_eval", 20)
+        self.particle_filter = None
+        if self.use_particle_filter:
+            self.particle_filter = ParticleFilter(
+                iekf=self.model,
+                M=self.pf_num_particles_train,
+                resample_threshold=pf_cfg.get("resample_threshold", 0.5),
+                soft_alpha=pf_cfg.get("soft_resample_alpha", 0.5),
+                jitter_std=pf_cfg.get("jitter_std", 0.01),
+            )
+
+        # Transition model config
+        tm_cfg = (self.model_cfg or {}).get("transition_model", {})
+        self.use_transition_model = tm_cfg.get("enabled", False)
 
         # Initialize model with dataset normalization
         self.model.get_normalize_u(dataset)
@@ -229,6 +249,12 @@ class Trainer:
     def train_epoch(self, epoch):
         """Route to BPTT or standard training for one epoch."""
         if self.use_bptt:
+            if self.use_particle_filter and self.use_transition_model:
+                return self._train_epoch_bptt_pf(
+                    epoch, use_transition=True,
+                )
+            if self.use_particle_filter:
+                return self._train_epoch_bptt_pf(epoch)
             return self._train_epoch_bptt(epoch)
         return self._train_epoch_standard(epoch)
 
@@ -669,6 +695,302 @@ class Trainer:
 
             # ---- BPTT cut: detach state before next chunk ----
             state = TorchIEKF.detach_state(new_state)
+
+            if self.fast_dev_run:
+                break
+
+        return {
+            "total_loss": totals["loss"],
+            "n_valid": n_valid,
+            "gnorms": gnorms,
+            "n_skipped": n_skipped,
+            "sigma_z": sigma_z_vals,
+            "losses": totals,
+        }
+
+    # ------------------------------------------------------------------ #
+    # Particle Filter BPTT training                                       #
+    # ------------------------------------------------------------------ #
+
+    def _train_epoch_bptt_pf(self, epoch, use_transition=False):
+        """
+        TBPTT training epoch with particle filter.
+
+        Same sampling strategy as _train_epoch_bptt, but uses particle filter
+        with M particles per sequence. When use_transition=True, the encoder
+        runs only at the first chunk and the transition model propagates z.
+        """
+        self.model.train()
+
+        train_filter = self.dataset.datasets_train_filter
+        seq_names = list(train_filter.keys())
+        n_train = len(seq_names)
+
+        steps = self.steps_per_epoch
+        if steps is None:
+            import math
+            steps = max(1, math.ceil(n_train / self.batch_size))
+        if self.fast_dev_run:
+            steps = 1
+
+        rng = np.random.default_rng(self.seed + epoch)
+
+        epoch_loss = 0.0
+        epoch_losses = {}
+        n_optimizer_steps = 0
+        n_sequences = 0
+        n_skipped = 0
+        grad_norms = []
+        sigma_z_epoch = []
+
+        for step in range(steps):
+            sampled = rng.choice(seq_names, size=self.batch_size, replace=True)
+
+            for j, dataset_name in enumerate(sampled):
+                Ns = train_filter[dataset_name]
+                result = self._train_step_bptt_pf(
+                    dataset_name, Ns, step, j,
+                    use_transition=use_transition,
+                )
+
+                if result["n_valid"] == 0:
+                    n_skipped += 1
+                    cprint(
+                        f"  [step {step}, seq {j}] {dataset_name}: "
+                        f"all chunks invalid/skipped",
+                        "yellow", flush=True,
+                    )
+                    continue
+
+                epoch_loss += result["total_loss"]
+                for k, v in result["losses"].items():
+                    epoch_losses[k] = epoch_losses.get(k, 0.0) + v
+                n_optimizer_steps += result["n_valid"]
+                n_sequences += 1
+                n_skipped += result["n_skipped"]
+                grad_norms.extend(result["gnorms"])
+                sigma_z_epoch.extend(result["sigma_z"])
+                n_valid = result["n_valid"]
+                losses_str = ", ".join(
+                    f"{k}={v / n_valid:.5f}"
+                    for k, v in result["losses"].items()
+                )
+                cprint(
+                    f"  [step {step}, seq {j}] {dataset_name}: "
+                    f"total loss={result['total_loss'] / n_valid:.5f} "
+                    f"{losses_str} "
+                    f"({n_valid} chunks, {result['n_skipped']} skipped)",
+                    flush=True,
+                )
+
+            if self.fast_dev_run:
+                break
+
+        if n_sequences == 0:
+            return {
+                "train/loss_epoch": float("nan"),
+                "train/sequences_skipped": n_skipped,
+            }
+
+        avg_grad_norm = float(np.mean(grad_norms)) if grad_norms else 0.0
+        avg_epoch_loss = epoch_loss / max(n_optimizer_steps, 1)
+        metrics = {
+            "train/loss_epoch": avg_epoch_loss,
+            "train/grad_norm": avg_grad_norm,
+            "train/sequences_skipped": n_skipped,
+            "train/n_sequences": n_sequences,
+            "train/n_optimizer_steps": n_optimizer_steps,
+            "train/bptt_chunk_size": self.bptt_chunk_size,
+            "train/num_particles": self.pf_num_particles_train,
+        }
+        denom = max(n_optimizer_steps, 1)
+        for k, v in epoch_losses.items():
+            if k != "loss" and v > 0:
+                metrics[f"train/{k}_epoch"] = v / denom
+        if "kl" in epoch_losses and epoch_losses["kl"] > 0:
+            metrics["train/base_loss_epoch"] = (
+                avg_epoch_loss - epoch_losses["kl"] / denom
+            )
+        if sigma_z_epoch:
+            metrics["train/sigma_z"] = float(np.mean(sigma_z_epoch))
+        for i, pg in enumerate(self.optimizer.param_groups):
+            metrics[f"train/lr_group{i}"] = pg["lr"]
+        return metrics
+
+    def _train_step_bptt_pf(self, dataset_name, Ns, step=0, seq_idx=0,
+                             use_transition=False):
+        """
+        Run one sequence with Truncated BPTT using particle filter.
+
+        Similar to _train_step_bptt but uses M particles via the particle
+        filter. Each chunk: world model runs batched, particle filter
+        propagates M IEKFs, weighted mean trajectory used for RPE loss.
+
+        When use_transition=True, the encoder runs only at the first chunk
+        to initialize z_particles. Subsequent chunks use the transition model
+        to propagate z autoregressively.
+        """
+        from src.core.torch_iekf import TorchIEKF
+
+        # Load + slice
+        t, ang_gt, p_gt, v_gt, u = self.dataset.get_data(dataset_name)
+        t = t[Ns[0] : Ns[1]]
+        ang_gt = ang_gt[Ns[0] : Ns[1]]
+        p_gt = p_gt[Ns[0] : Ns[1]] - p_gt[Ns[0]]
+        v_gt = v_gt[Ns[0] : Ns[1]]
+        u = u[Ns[0] : Ns[1]]
+
+        N0, N_end = self._get_start_and_end(self.seq_dim, u)
+        t = t[N0:N_end].float().to(self.device)
+        ang_gt = ang_gt[N0:N_end].float().to(self.device)
+        p_gt = (p_gt[N0:N_end] - p_gt[N0]).float().to(self.device)
+        v_gt = v_gt[N0:N_end].float().to(self.device)
+        u = self.dataset.add_noise(u[N0:N_end].float().to(self.device))
+        N = t.shape[0]
+
+        list_rpe = self.dataset.list_rpe.get(dataset_name)
+        if list_rpe is None:
+            return {
+                "total_loss": 0.0, "n_valid": 0, "gnorms": [],
+                "n_skipped": 1, "sigma_z": [], "losses": {},
+            }
+
+        M = self.pf_num_particles_train
+
+        # Initialize filter state and replicate for M particles
+        self.model.set_Q()
+        single_state = self.model.init_state(t, u, v_gt, ang_gt[0])
+        single_state = TorchIEKF.detach_state(single_state)
+        state, log_weights = self.particle_filter.init_particles(single_state)
+
+        totals = {"loss": 0.0, "kl": 0.0}
+        n_valid = 0
+        n_skipped = 0
+        gnorms = []
+        sigma_z_vals = []
+        chunk_size = self.bptt_chunk_size
+        z_particles = None  # For transition model
+
+        for ci, cs in enumerate(range(0, N, chunk_size)):
+            ce = min(cs + chunk_size, N)
+            if ce - cs < 2:
+                break
+
+            # Fresh graph for this chunk
+            self.model.set_Q()
+
+            transition_model = None
+            world_model_for_decode = None
+
+            if use_transition and ci > 0:
+                # Transition model mode: no encoder, propagate z
+                transition_model = self.model.transition_model
+                world_model_for_decode = self.model.world_model
+                wm_c = None  # Not used for pre-computed outputs
+            else:
+                # Encoder mode: first chunk or naive PF
+                wm_c = self.model.forward_world_model_batched(u[cs:ce], M)
+                if wm_c is None:
+                    n_skipped += 1
+                    continue
+
+                # Initialize z_particles from encoder output (first timestep)
+                if use_transition and ci == 0 and wm_c.mu_z is not None:
+                    mu_z_0 = wm_c.mu_z[0]  # (latent_dim,)
+                    log_var_z_0 = wm_c.log_var_z[0]
+                    sigma_z_0 = torch.exp(0.5 * log_var_z_0)
+                    epsilon = torch.randn(
+                        M, mu_z_0.shape[0], device=mu_z_0.device,
+                    )
+                    z_particles = mu_z_0.unsqueeze(0) + sigma_z_0.unsqueeze(0) * epsilon
+
+            # Run particle filter for this chunk
+            traj, new_state, new_log_weights, z_particles = \
+                self.particle_filter.run_chunk(
+                    state, t[cs:ce], u[cs:ce], wm_c, log_weights,
+                    z_particles=z_particles,
+                    transition_model=transition_model,
+                    world_model=world_model_for_decode,
+                )
+
+            # Weighted mean trajectory for loss
+            Rot_mean, p_mean = self.particle_filter.weighted_estimate(
+                traj, new_log_weights,
+            )
+
+            # RPE loss on weighted mean trajectory
+            loss = self.loss_fn(
+                Rot_mean, p_mean, None, None,
+                list_rpe=list_rpe, N0=N0 + cs,
+            )
+
+            # KL regularization (only when encoder was used)
+            chunk_kl = 0.0
+            if (
+                self.kl_weight > 0
+                and wm_c is not None
+                and wm_c.mu_z is not None
+            ):
+                kl = (
+                    -0.5
+                    * (
+                        1
+                        + wm_c.log_var_z
+                        - wm_c.mu_z.pow(2)
+                        - wm_c.log_var_z.exp()
+                    ).mean()
+                )
+                anneal = 1.0
+                chunk_kl = (self.kl_weight * anneal * kl).item()
+                loss = loss + self.kl_weight * anneal * kl
+
+            # Loss clamping and skipping
+            max_loss = self.loss_cfg.get("max_loss", None)
+            if max_loss is not None and isinstance(loss, torch.Tensor):
+                if loss.item() > max_loss:
+                    loss = -1
+
+            if loss == -1 or torch.isnan(loss):
+                n_skipped += 1
+                cprint(
+                    f"  [step {step}, seq {seq_idx}, chunk {ci}] "
+                    f"{dataset_name}: loss invalid",
+                    "yellow", flush=True,
+                )
+                state = TorchIEKF.detach_state(new_state)
+                log_weights = new_log_weights.detach()
+                if z_particles is not None:
+                    z_particles = z_particles.detach()
+                continue
+
+            loss.backward()
+            g_norm = torch.nn.utils.clip_grad_norm_(
+                self.model.parameters(), self.max_grad_norm
+            )
+
+            if torch.isnan(g_norm):
+                cprint(
+                    f"  [bptt-pf chunk {ci}] gradient norm is NaN, skipping",
+                    "yellow",
+                )
+                self.optimizer.zero_grad()
+            else:
+                self.optimizer.step()
+                self.optimizer.zero_grad()
+                n_valid += 1
+                totals["loss"] += loss.item()
+                totals["kl"] += chunk_kl
+                gnorms.append(float(g_norm))
+                if wm_c is not None and wm_c.log_var_z is not None:
+                    sigma_z_vals.append(
+                        (0.5 * wm_c.log_var_z).exp().mean().item()
+                    )
+
+            # BPTT cut: detach state, weights, and z before next chunk
+            state = TorchIEKF.detach_state(new_state)
+            log_weights = new_log_weights.detach()
+            if z_particles is not None:
+                z_particles = z_particles.detach()
 
             if self.fast_dev_run:
                 break

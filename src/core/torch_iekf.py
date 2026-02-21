@@ -119,6 +119,7 @@ class TorchIEKF(torch.nn.Module):
         self.mes_net = None
         self.bias_correction_net = None
         self.world_model = None
+        self.transition_model = None
 
     def _copy_scalar_params(self, params):
         """Copy non-tensor, non-callable attributes from *params* to self."""
@@ -211,6 +212,15 @@ class TorchIEKF(torch.nn.Module):
                     type_name, net_cfg.get("architecture", {})
                 )
                 setattr(iekf, attr, net)
+
+        # Transition model (optional, for Stage 4 particle filter)
+        tm_cfg = cfg.get("transition_model", {})
+        if tm_cfg.get("enabled", False):
+            type_name = tm_cfg.get("type", "TransitionModel")
+            net = cls._build_network(
+                type_name, tm_cfg.get("architecture", {})
+            )
+            iekf.transition_model = net
 
         return iekf
 
@@ -976,6 +986,490 @@ class TorchIEKF(torch.nn.Module):
         S[2, 2] = torch.det(U) * torch.det(V)
         return U.mm(S).mm(V.t())
 
+    # ==================================================================
+    # Batched geometry utilities  (leading dimension M)
+    # ==================================================================
+
+    @staticmethod
+    def skew_torch_batched(x):
+        """Skew-symmetric matrices from (M, 3) batch of vectors → (M, 3, 3)."""
+        M = x.shape[0]
+        S = x.new_zeros(M, 3, 3)
+        S[:, 0, 1] = -x[:, 2]
+        S[:, 0, 2] = x[:, 1]
+        S[:, 1, 0] = x[:, 2]
+        S[:, 1, 2] = -x[:, 0]
+        S[:, 2, 0] = -x[:, 1]
+        S[:, 2, 1] = x[:, 0]
+        return S
+
+    @staticmethod
+    def so3exp_torch_batched(phi):
+        """SO(3) exponential map for (M, 3) batch → (M, 3, 3).
+
+        Uses Rodrigues formula with numerically stable small-angle handling
+        via ``torch.where`` (no branching, fully differentiable).
+        """
+        angle = phi.norm(dim=-1, keepdim=True)  # (M, 1)
+        # Avoid division by zero: use safe denominator for axis computation
+        safe_angle = torch.where(angle > 1e-10, angle, torch.ones_like(angle))
+        axis = phi / safe_angle  # (M, 3)
+
+        # Small-angle approximation coefficients
+        # sin(a)/a ≈ 1 - a²/6,  (1-cos(a))/a² ≈ 1/2 - a²/24
+        a2 = (angle * angle).squeeze(-1)  # (M,)
+        sin_a_over_a = torch.where(
+            angle.squeeze(-1) > 1e-10,
+            torch.sin(angle.squeeze(-1)) / safe_angle.squeeze(-1),
+            1.0 - a2 / 6.0,
+        )
+        one_minus_cos_over_a2 = torch.where(
+            angle.squeeze(-1) > 1e-10,
+            (1.0 - torch.cos(angle.squeeze(-1))) / (safe_angle.squeeze(-1) ** 2),
+            0.5 - a2 / 24.0,
+        )
+
+        skew = TorchIEKF.skew_torch_batched(phi)  # (M, 3, 3)
+        skew2 = torch.bmm(skew, skew)  # (M, 3, 3)
+
+        Id3 = torch.eye(3, dtype=phi.dtype, device=phi.device).unsqueeze(0)
+        R = (
+            Id3
+            + sin_a_over_a.unsqueeze(-1).unsqueeze(-1) * skew
+            + one_minus_cos_over_a2.unsqueeze(-1).unsqueeze(-1) * skew2
+        )
+        return R
+
+    @staticmethod
+    def se23_exp_torch_batched(xi):
+        """SE_2(3) exponential map for (M, 9) batch.
+
+        Returns:
+            Rot: (M, 3, 3)
+            x:   (M, 3, 2) — velocity and position corrections
+        """
+        phi = xi[:, :3]  # (M, 3)
+        angle = phi.norm(dim=-1, keepdim=True)  # (M, 1)
+        safe_angle = torch.where(angle > 1e-10, angle, torch.ones_like(angle))
+
+        a2 = (angle * angle).squeeze(-1)  # (M,)
+        a_sq = safe_angle.squeeze(-1)
+
+        sin_a_over_a = torch.where(
+            angle.squeeze(-1) > 1e-10,
+            torch.sin(angle.squeeze(-1)) / a_sq,
+            1.0 - a2 / 6.0,
+        )
+        one_minus_cos_over_a2 = torch.where(
+            angle.squeeze(-1) > 1e-10,
+            (1.0 - torch.cos(angle.squeeze(-1))) / (a_sq ** 2),
+            0.5 - a2 / 24.0,
+        )
+        # (a - sin(a))/a^3 ≈ 1/6 - a²/120 for small angles
+        a_minus_sin_over_a3 = torch.where(
+            angle.squeeze(-1) > 1e-10,
+            (a_sq - torch.sin(angle.squeeze(-1))) / (a_sq ** 3),
+            1.0 / 6.0 - a2 / 120.0,
+        )
+
+        skew = TorchIEKF.skew_torch_batched(phi)  # (M, 3, 3)
+        skew2 = torch.bmm(skew, skew)  # (M, 3, 3)
+
+        Id3 = torch.eye(3, dtype=xi.dtype, device=xi.device).unsqueeze(0)
+
+        Rot = (
+            Id3
+            + sin_a_over_a.unsqueeze(-1).unsqueeze(-1) * skew
+            + one_minus_cos_over_a2.unsqueeze(-1).unsqueeze(-1) * skew2
+        )
+
+        J = (
+            Id3
+            + one_minus_cos_over_a2.unsqueeze(-1).unsqueeze(-1) * skew
+            + a_minus_sin_over_a3.unsqueeze(-1).unsqueeze(-1) * skew2
+        )
+
+        # xi[3:9] → (M, 2, 3) (two 3-vectors: dv and dp)
+        vp = xi[:, 3:].reshape(-1, 2, 3)  # (M, 2, 3)
+        # J @ vp^T → (M, 3, 2)
+        x = torch.bmm(J, vp.transpose(1, 2))  # (M, 3, 2)
+        return Rot, x
+
+    @staticmethod
+    def normalize_rot_torch_batched(Rot):
+        """Project (M, 3, 3) near-rotation matrices back onto SO(3) via SVD."""
+        U, _, Vh = torch.linalg.svd(Rot)
+        det_sign = torch.det(U) * torch.det(Vh)  # (M,)
+        S = torch.eye(3, dtype=Rot.dtype, device=Rot.device).unsqueeze(0).expand_as(Rot).clone()
+        S[:, 2, 2] = det_sign
+        return torch.bmm(U, torch.bmm(S, Vh))
+
+    # ==================================================================
+    # Batched filter methods  (leading dimension M for particles)
+    # ==================================================================
+
+    def init_state_batched(self, t, u, v_mes, ang0, M):
+        """
+        Build initial filter state replicated for M particles.
+
+        Args:
+            t, u, v_mes, ang0: Same as ``init_state``.
+            M: Number of particles.
+
+        Returns:
+            State dict with all tensors having leading dimension M.
+        """
+        single = self.init_state(t, u, v_mes, ang0)
+        batched = {}
+        for k, v in single.items():
+            batched[k] = v.unsqueeze(0).expand(M, *v.shape).clone()
+        return batched
+
+    def propagate_batched(
+        self,
+        Rot_prev,   # (M, 3, 3)
+        v_prev,     # (M, 3)
+        p_prev,     # (M, 3)
+        b_omega_prev,  # (M, 3)
+        b_acc_prev,    # (M, 3)
+        Rot_c_i_prev,  # (M, 3, 3)
+        t_c_i_prev,    # (M, 3)
+        P_prev,        # (M, 21, 21)
+        u,             # (6,) shared across particles
+        dt,            # scalar
+        bias_correction=None,       # (M, 3) or None
+        gyro_correction=None,       # (M, 3) or None
+        process_noise_scaling=None, # (M, 6) or None
+        bias_noise_scaling=None,    # (M, 3) or None
+    ):
+        """Propagate M filter instances forward one timestep (batched)."""
+        M = Rot_prev.shape[0]
+        Rot_prev = Rot_prev.clone()
+
+        # Accelerometer: u[3:6] is shared, biases are per-particle
+        acc_b = u[3:6].unsqueeze(0) - b_acc_prev  # (M, 3)
+        if bias_correction is not None:
+            acc_b = acc_b - bias_correction
+        # Rot_prev @ acc_b  →  bmm: (M,3,3) @ (M,3,1) → (M,3)
+        acc = torch.bmm(Rot_prev, acc_b.unsqueeze(-1)).squeeze(-1) + self.g  # (M, 3)
+        v = v_prev + acc * dt
+        p = p_prev + v_prev * dt + 0.5 * acc * dt ** 2
+
+        # Rotation
+        omega_corrected = u[:3].unsqueeze(0) - b_omega_prev  # (M, 3)
+        if gyro_correction is not None:
+            omega_corrected = omega_corrected - gyro_correction
+        omega = omega_corrected * dt  # (M, 3)
+        Rot = torch.bmm(Rot_prev, self.so3exp_torch_batched(omega))  # (M, 3, 3)
+
+        # Biases / extrinsics constant
+        b_omega = b_omega_prev
+        b_acc = b_acc_prev
+        Rot_c_i = Rot_c_i_prev.clone()
+        t_c_i = t_c_i_prev
+
+        # Covariance
+        P = self.propagate_cov_torch_batched(
+            P_prev, Rot_prev, v_prev, p_prev,
+            b_omega_prev, b_acc_prev, u, dt,
+            process_noise_scaling=process_noise_scaling,
+            bias_noise_scaling=bias_noise_scaling,
+        )
+        return Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i, P
+
+    def propagate_cov_torch_batched(
+        self, P, Rot_prev, v_prev, p_prev,
+        b_omega_prev, b_acc_prev, u, dt,
+        process_noise_scaling=None,
+        bias_noise_scaling=None,
+    ):
+        """Propagate covariance for M particles in parallel.
+
+        Args:
+            P:                    (M, 21, 21)
+            Rot_prev:             (M, 3, 3)
+            v_prev, p_prev, ...:  (M, 3)
+            u:                    (6,)  shared
+            dt:                   scalar
+            process_noise_scaling: (M, 6) or None
+            bias_noise_scaling:    (M, 3) or None
+        """
+        M = P.shape[0]
+        Q_dim = self.Q.shape[0]  # 18
+
+        # Start from the base Q, expand to (M, 18, 18)
+        Q = self.Q.unsqueeze(0).expand(M, -1, -1).clone()  # (M, 18, 18)
+
+        if process_noise_scaling is not None:
+            # process_noise_scaling: (M, 6)
+            for k in range(6):
+                Q[:, 3*k:3*k+3, 3*k:3*k+3] = (
+                    Q[:, 3*k:3*k+3, 3*k:3*k+3]
+                    * process_noise_scaling[:, k].unsqueeze(-1).unsqueeze(-1)
+                )
+
+        if bias_noise_scaling is not None:
+            # bias_noise_scaling: (M, 3)
+            ones_pre = torch.ones(M, 9, dtype=Q.dtype, device=Q.device)
+            ones_post = torch.ones(M, Q_dim - 15, dtype=Q.dtype, device=Q.device)
+            diag_scale = torch.cat(
+                [ones_pre, bias_noise_scaling, bias_noise_scaling, ones_post], dim=1
+            )  # (M, 18)
+            Q = Q * torch.diag_embed(diag_scale)  # (M, 18, 18)
+
+        # Batched skew products
+        v_skew = self.skew_torch_batched(v_prev)           # (M, 3, 3)
+        p_skew = self.skew_torch_batched(p_prev)           # (M, 3, 3)
+        v_skew_rot = torch.bmm(v_skew, Rot_prev)           # (M, 3, 3)
+        p_skew_rot = torch.bmm(p_skew, Rot_prev)           # (M, 3, 3)
+
+        # Gravity skew is shared across particles
+        g_skew = self.skew_torch(self.g)                    # (3, 3)
+
+        # Build F: (M, 21, 21)
+        F = P.new_zeros(M, self.P_dim, self.P_dim)
+        F[:, 3:6, :3] = g_skew.unsqueeze(0)                # shared
+        F[:, 6:9, 3:6] = self.Id3.unsqueeze(0)             # shared
+        F[:, 3:6, 12:15] = -Rot_prev
+        F[:, :3, 9:12] = -Rot_prev
+        F[:, 3:6, 9:12] = -v_skew_rot
+        F[:, 6:9, 9:12] = -p_skew_rot
+
+        # Build G: (M, 21, 18)
+        G = P.new_zeros(M, self.P_dim, Q_dim)
+        G[:, :3, :3] = Rot_prev
+        G[:, 3:6, :3] = v_skew_rot
+        G[:, 6:9, :3] = p_skew_rot
+        G[:, 3:6, 3:6] = Rot_prev
+        G[:, 9:12, 6:9] = self.Id3.unsqueeze(0)
+        G[:, 12:15, 9:12] = self.Id3.unsqueeze(0)
+        G[:, 15:18, 12:15] = self.Id3.unsqueeze(0)
+        G[:, 18:21, 15:18] = self.Id3.unsqueeze(0)
+
+        F = F * dt
+        G = G * dt
+
+        # Phi = I + F + F²/2 + F³/6
+        F2 = torch.bmm(F, F)
+        IdP = self.IdP.unsqueeze(0)  # (1, 21, 21)
+        Phi = IdP + F + 0.5 * F2 + (1.0 / 6.0) * torch.bmm(F2, F)
+
+        # P_new = Phi @ (P + G @ Q @ G^T) @ Phi^T
+        GQ = torch.bmm(G, Q)                               # (M, 21, 18)
+        GQGt = torch.bmm(GQ, G.transpose(1, 2))            # (M, 21, 21)
+        inner = P + GQGt
+        P_new = torch.bmm(Phi, torch.bmm(inner, Phi.transpose(1, 2)))
+        return P_new
+
+    def update_batched(
+        self,
+        Rot,            # (M, 3, 3)
+        v,              # (M, 3)
+        p,              # (M, 3)
+        b_omega,        # (M, 3)
+        b_acc,          # (M, 3)
+        Rot_c_i,        # (M, 3, 3)
+        t_c_i,          # (M, 3)
+        P,              # (M, 21, 21)
+        u,              # (6,) shared
+        i,              # timestep index (unused, kept for API compat)
+        measurement_cov,  # (M, 2)
+    ):
+        """Update M filter instances using zero velocity constraints (batched)."""
+        M = Rot.shape[0]
+
+        # Body frame orientation
+        Rot_body = torch.bmm(Rot, Rot_c_i)  # (M, 3, 3)
+
+        # Velocity in IMU frame: Rot^T @ v  →  (M, 3, 3)^T @ (M, 3, 1)
+        v_imu = torch.bmm(Rot.transpose(1, 2), v.unsqueeze(-1)).squeeze(-1)  # (M, 3)
+
+        # Angular velocity
+        omega = u[:3].unsqueeze(0) - b_omega  # (M, 3)
+
+        # Velocity in body frame: Rot_c_i^T @ v_imu + skew(t_c_i) @ omega
+        v_imu_in_body = torch.bmm(
+            Rot_c_i.transpose(1, 2), v_imu.unsqueeze(-1)
+        ).squeeze(-1)  # (M, 3)
+        skew_t = self.skew_torch_batched(t_c_i)  # (M, 3, 3)
+        v_body = v_imu_in_body + torch.bmm(skew_t, omega.unsqueeze(-1)).squeeze(-1)
+
+        Omega = self.skew_torch_batched(omega)  # (M, 3, 3)
+
+        # Measurement Jacobian pieces
+        skew_v_imu = self.skew_torch_batched(v_imu)  # (M, 3, 3)
+        H_v_imu = torch.bmm(Rot_c_i.transpose(1, 2), skew_v_imu)  # (M, 3, 3)
+        H_t_c_i = skew_t  # (M, 3, 3)
+
+        # Build H: (M, 2, 21) — rows 1,2 of the body-frame velocity Jacobian
+        H = P.new_zeros(M, 2, self.P_dim)
+        H[:, :, 3:6] = Rot_body.transpose(1, 2)[:, 1:, :]     # rows 1,2
+        H[:, :, 15:18] = H_v_imu[:, 1:, :]
+        H[:, :, 9:12] = H_t_c_i[:, 1:, :]
+        H[:, :, 18:21] = -Omega[:, 1:, :]
+
+        # Innovation
+        r = -v_body[:, 1:]  # (M, 2)
+
+        # Measurement noise
+        R = torch.diag_embed(measurement_cov)  # (M, 2, 2)
+
+        return self.state_and_cov_update_torch_batched(
+            Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i, P, H, r, R
+        )
+
+    def state_and_cov_update_torch_batched(
+        self, Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i, P, H, r, R
+    ):
+        """Batched Kalman gain, state correction, and covariance update.
+
+        All inputs have leading dimension M.
+        """
+        M = Rot.shape[0]
+
+        # S = H P H^T + R   → (M, 2, 2)
+        S = torch.bmm(torch.bmm(H, P), H.transpose(1, 2)) + R
+
+        # K = P H^T S^{-1}  → (M, 21, 2)
+        PHt = torch.bmm(P, H.transpose(1, 2))  # (M, 21, 2)
+        # Solve S^T K^T = (P H^T)^T  ⟹  K = (P H^T) @ S^{-T}
+        # torch.linalg.solve(A, B) solves A X = B
+        K = torch.linalg.solve(S.transpose(1, 2), PHt.transpose(1, 2)).transpose(1, 2)
+
+        # dx = K @ r  → (M, 21)
+        dx = torch.bmm(K, r.unsqueeze(-1)).squeeze(-1)
+
+        # SE_2(3) correction
+        dR, dxi = self.se23_exp_torch_batched(dx[:, :9])  # dR: (M,3,3), dxi: (M,3,2)
+        dv = dxi[:, :, 0]  # (M, 3)
+        dp = dxi[:, :, 1]  # (M, 3)
+        Rot_up = torch.bmm(dR, Rot)
+        v_up = torch.bmm(dR, v.unsqueeze(-1)).squeeze(-1) + dv
+        p_up = torch.bmm(dR, p.unsqueeze(-1)).squeeze(-1) + dp
+
+        # Bias updates
+        b_omega_up = b_omega + dx[:, 9:12]
+        b_acc_up = b_acc + dx[:, 12:15]
+
+        # Extrinsic updates
+        dR_ci = self.so3exp_torch_batched(dx[:, 15:18])
+        Rot_c_i_up = torch.bmm(dR_ci, Rot_c_i)
+        t_c_i_up = t_c_i + dx[:, 18:21]
+
+        # Joseph form covariance update
+        IdP = torch.eye(
+            K.shape[1], dtype=K.dtype, device=K.device
+        ).unsqueeze(0).expand(M, -1, -1)
+        I_KH = IdP - torch.bmm(K, H)  # (M, 21, 21)
+        P_up = (
+            torch.bmm(I_KH, torch.bmm(P, I_KH.transpose(1, 2)))
+            + torch.bmm(K, torch.bmm(R, K.transpose(1, 2)))
+        )
+        P_up = (P_up + P_up.transpose(1, 2)) / 2  # symmetrize
+
+        return Rot_up, v_up, p_up, b_omega_up, b_acc_up, Rot_c_i_up, t_c_i_up, P_up
+
+    def run_chunk_batched(
+        self,
+        state,
+        t_chunk,
+        u_chunk,
+        measurements_covs_chunk,  # (M, K, 2)
+        bias_corrections_chunk=None,        # (M, K, 3) or None
+        gyro_corrections_chunk=None,        # (M, K, 3) or None
+        process_noise_scaling_chunk=None,   # (M, K, 6) or None
+        bias_noise_scaling_chunk=None,      # (M, K, 3) or None
+    ):
+        """
+        Run M batched filter instances for one BPTT chunk.
+
+        Args:
+            state: Dict with (M, ...) tensors from ``init_state_batched``
+                   or previous chunk.
+            t_chunk:  (K,)  timestamps.
+            u_chunk:  (K, 6) shared IMU.
+            measurements_covs_chunk: (M, K, 2) per-particle measurement covs.
+            bias_corrections_chunk:  (M, K, 3) or None.
+            gyro_corrections_chunk:  (M, K, 3) or None.
+            process_noise_scaling_chunk: (M, K, 6) or None.
+            bias_noise_scaling_chunk:    (M, K, 3) or None.
+
+        Returns:
+            traj:      Tuple (Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i),
+                       each (M, K, ...).
+            new_state: Dict with (M, ...) tensors at end of chunk.
+        """
+        K = t_chunk.shape[0]
+        M = state["Rot"].shape[0]
+        dt_chunk = t_chunk[1:] - t_chunk[:-1]
+
+        # Allocate trajectory tensors
+        Rot = t_chunk.new_zeros(M, K, 3, 3).float()
+        v_traj = t_chunk.new_zeros(M, K, 3).float()
+        p_traj = t_chunk.new_zeros(M, K, 3).float()
+        b_omega_traj = t_chunk.new_zeros(M, K, 3).float()
+        b_acc_traj = t_chunk.new_zeros(M, K, 3).float()
+        Rot_c_i_traj = t_chunk.new_zeros(M, K, 3, 3).float()
+        t_c_i_traj = t_chunk.new_zeros(M, K, 3).float()
+
+        # Seed first timestep
+        Rot[:, 0] = state["Rot"]
+        v_traj[:, 0] = state["v"]
+        p_traj[:, 0] = state["p"]
+        b_omega_traj[:, 0] = state["b_omega"]
+        b_acc_traj[:, 0] = state["b_acc"]
+        Rot_c_i_traj[:, 0] = state["Rot_c_i"]
+        t_c_i_traj[:, 0] = state["t_c_i"]
+        P = state["P"]  # (M, 21, 21)
+
+        for i in range(1, K):
+            bc_i = bias_corrections_chunk[:, i] if bias_corrections_chunk is not None else None
+            gc_i = gyro_corrections_chunk[:, i] if gyro_corrections_chunk is not None else None
+            pns_i = process_noise_scaling_chunk[:, i] if process_noise_scaling_chunk is not None else None
+            bns_i = bias_noise_scaling_chunk[:, i] if bias_noise_scaling_chunk is not None else None
+
+            (Rot_i, v_i, p_i, b_omega_i, b_acc_i,
+             Rot_c_i_i, t_c_i_i, P_i) = self.propagate_batched(
+                Rot[:, i - 1],
+                v_traj[:, i - 1],
+                p_traj[:, i - 1],
+                b_omega_traj[:, i - 1],
+                b_acc_traj[:, i - 1],
+                Rot_c_i_traj[:, i - 1],
+                t_c_i_traj[:, i - 1],
+                P,
+                u_chunk[i],
+                dt_chunk[i - 1],
+                bias_correction=bc_i,
+                gyro_correction=gc_i,
+                process_noise_scaling=pns_i,
+                bias_noise_scaling=bns_i,
+            )
+
+            (Rot[:, i], v_traj[:, i], p_traj[:, i],
+             b_omega_traj[:, i], b_acc_traj[:, i],
+             Rot_c_i_traj[:, i], t_c_i_traj[:, i],
+             P) = self.update_batched(
+                Rot_i, v_i, p_i, b_omega_i, b_acc_i,
+                Rot_c_i_i, t_c_i_i, P_i,
+                u_chunk[i], i,
+                measurements_covs_chunk[:, i],
+            )
+
+        traj = (Rot, v_traj, p_traj, b_omega_traj, b_acc_traj,
+                Rot_c_i_traj, t_c_i_traj)
+        new_state = dict(
+            Rot=Rot[:, -1],
+            v=v_traj[:, -1],
+            p=p_traj[:, -1],
+            b_omega=b_omega_traj[:, -1],
+            b_acc=b_acc_traj[:, -1],
+            Rot_c_i=Rot_c_i_traj[:, -1],
+            t_c_i=t_c_i_traj[:, -1],
+            P=P,
+        )
+        return traj, new_state
+
     # ------------------------------------------------------------------
     # Network integration
     # ------------------------------------------------------------------
@@ -1034,6 +1528,25 @@ class TorchIEKF(torch.nn.Module):
         u_n = self.normalize_u(u).t().unsqueeze(0)
         u_n = u_n[:, :6]
         return self.world_model(u_n, self)
+
+    def forward_world_model_batched(self, u, M):
+        """
+        Run the world model with M particle samples on raw IMU data.
+
+        Args:
+            u: IMU measurements (N, 6), raw (not normalized).
+            M: Number of particles.
+
+        Returns:
+            ``WorldModelOutput`` with (M, N, dim) shaped tensors, or *None*
+            if no world model is attached.
+        """
+        if self.world_model is None:
+            return None
+
+        u_n = self.normalize_u(u).t().unsqueeze(0)
+        u_n = u_n[:, :6]
+        return self.world_model.forward_batched(u_n, self, M)
 
     def set_Q(self):
         """
