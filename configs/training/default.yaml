@@ -33,7 +33,7 @@ save_interval: 10
 # Validation
 validation:
     enabled: true
-    interval: ${training.save_interval} # Validate every N epochs
+    interval: 1 # Validate every N epochs
     save_best: true # Save checkpoint when validation improves
     # Run full filter evaluation on val sequences during training
     test_eval:
