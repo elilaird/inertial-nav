@@ -110,19 +110,23 @@ class IMUFeatureExtractor(nn.Module):
 
 class ProcessDecoder(nn.Module):
     """
-    MLP decoder: latent z → bias corrections + bias noise scaling.
+    MLP decoder: latent z → bias corrections + optional bias noise scaling.
 
-    Architecture:
-        FC: latent_dim → 32, ReLU
-        FC: 32 → 9
+    Two independent heads prevent gradient cross-contamination:
 
-    Output split:
+    bias_net:  FC(latent_dim → 32) → ReLU → LayerNorm → FC(32 → 6)
         raw[:, 0:3] → delta_b_omega = sigma_bw * alpha * tanh(raw[:, 0:3])
         raw[:, 3:6] → delta_b_a     = sigma_ba * alpha * tanh(raw[:, 3:6])
-        raw[:, 6:9] → Q_bias_scale  = exp(raw[:, 6:9])
+
+    q_net (optional):  FC(latent_dim → 32) → ReLU → LayerNorm → FC(32 → 3)
+        raw → Q_bias_scale = exp(clamp(raw, -q_scale_clamp, q_scale_clamp))
+
+    When use_bias_noise_scaling=False, q_net is not created and Q_bias_scale
+    is always ones (no Q perturbation). Set this to False initially; enable
+    once bias corrections are stable.
 
     sigma_bw, sigma_ba are derived from the IEKF's Q at forward time.
-    When the network outputs zero: delta_b = 0, Q_bias_scale = 1 (identity).
+    When networks output zero: delta_b = 0, Q_bias_scale = 1 (identity).
     """
 
     def __init__(
@@ -131,22 +135,42 @@ class ProcessDecoder(nn.Module):
         alpha: float = 3.0,
         weight_scale: float = 0.01,
         bias_scale: float = 0.01,
+        use_bias_noise_scaling: bool = True,
+        q_scale_clamp: float = 2.0,
     ):
         super().__init__()
         self.alpha = alpha
-        self.net = nn.Sequential(
+        self.use_bias_noise_scaling = use_bias_noise_scaling
+        self.q_scale_clamp = q_scale_clamp
+
+        # Fix 2: separate head for bias corrections — isolated from Q_bias_scale
+        self.bias_net = nn.Sequential(
             nn.Linear(latent_dim, 32),
             nn.ReLU(),
             nn.LayerNorm(32),
-            nn.Linear(32, 9),
+            nn.Linear(32, 6),
         )
+
+        # Fix 2 + 3: separate head for Q_bias_scale, only created when enabled
+        self.q_net: Optional[nn.Sequential] = None
+        if use_bias_noise_scaling:
+            self.q_net = nn.Sequential(
+                nn.Linear(latent_dim, 32),
+                nn.ReLU(),
+                nn.LayerNorm(32),
+                nn.Linear(32, 3),
+            )
+
         self._small_init(weight_scale, bias_scale)
 
     def _small_init(self, ws: float, bs: float):
-        for layer in self.net:
-            if isinstance(layer, nn.Linear):
-                layer.weight.data.mul_(ws)
-                layer.bias.data.mul_(bs)
+        for net in [self.bias_net, self.q_net]:
+            if net is None:
+                continue
+            for layer in net:
+                if isinstance(layer, nn.Linear):
+                    layer.weight.data.mul_(ws)
+                    layer.bias.data.mul_(bs)
 
     def forward(
         self, z: torch.Tensor, sigma_bw: torch.Tensor, sigma_ba: torch.Tensor
@@ -159,12 +183,24 @@ class ProcessDecoder(nn.Module):
         Returns:
             delta_b_omega: (N, 3)
             delta_b_a:     (N, 3)
-            Q_bias_scale:  (N, 3)
+            Q_bias_scale:  (N, 3) — ones if use_bias_noise_scaling=False
         """
-        raw = self.net(z)  # (N, 9)
-        delta_b_omega = sigma_bw * self.alpha * torch.tanh(raw[:, 0:3])
-        delta_b_a = sigma_ba * self.alpha * torch.tanh(raw[:, 3:6])
-        Q_bias_scale = torch.exp(raw[:, 6:9])
+        raw_bias = self.bias_net(z)  # (N, 6)
+        delta_b_omega = sigma_bw * self.alpha * torch.tanh(raw_bias[:, 0:3])
+        delta_b_a = sigma_ba * self.alpha * torch.tanh(raw_bias[:, 3:6])
+
+        if self.q_net is not None:
+            raw_q = self.q_net(z)  # (N, 3)
+            # Fix 1: clamp before exp — bounded to [exp(-c), exp(c)]
+            Q_bias_scale = torch.exp(
+                torch.clamp(raw_q, min=-self.q_scale_clamp, max=self.q_scale_clamp)
+            )
+        else:
+            # Fix 3: no Q perturbation
+            Q_bias_scale = torch.ones(
+                z.shape[0], 3, dtype=z.dtype, device=z.device
+            )
+
         return delta_b_omega, delta_b_a, Q_bias_scale
 
 
@@ -297,6 +333,8 @@ class LatentWorldModel(BaseCovarianceNet):
                 alpha=proc_cfg.get("alpha", 3.0),
                 weight_scale=weight_scale,
                 bias_scale=bias_scale,
+                use_bias_noise_scaling=proc_cfg.get("use_bias_noise_scaling", True),
+                q_scale_clamp=proc_cfg.get("q_scale_clamp", 2.0),
             )
 
     # ------------------------------------------------------------------ #

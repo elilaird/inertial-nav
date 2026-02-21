@@ -97,10 +97,14 @@ networks:
 
       # ProcessDecoder: z → delta_b_omega, delta_b_a, Q_bias_scale
       # Bias corrections bounded by alpha * sigma_{bw,ba} (physics-motivated)
-      # Q_bias_scale scales both b_omega and b_acc diagonal elements
+      # Q_bias_scale scales both b_omega and b_acc diagonal elements.
+      # Two independent heads prevent gradient cross-contamination (Fix 2).
       process_decoder:
         enabled: true
         alpha: 3.0            # bound: corrections within ±alpha*sigma_{bw,ba}
+        use_bias_noise_scaling: false  # Fix 3: disable Q_bias_scale initially;
+                                       # enable once bias corrections are stable
+        q_scale_clamp: 2.0    # Fix 1: clamp raw Q input to exp range [0.14, 7.4]
 
       # Near-zero init so decoders start as identity (no correction initially)
       weight_scale: 0.1 # from 0.01
