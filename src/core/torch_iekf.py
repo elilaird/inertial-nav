@@ -745,14 +745,17 @@ class TorchIEKF(torch.nn.Module):
     @staticmethod
     def skew_torch(x):
         """Skew-symmetric matrix from 3-vector."""
-        zero = torch.zeros(1, dtype=x.dtype, device=x.device).squeeze()
-        return torch.stack(
-            [
-                torch.stack([zero, -x[2], x[1]]),
-                torch.stack([x[2], zero, -x[0]]),
-                torch.stack([-x[1], x[0], zero]),
-            ]
-        )
+        mat = torch.zeros(3, 3, dtype=x.dtype, device=x.device)
+        mat[0, 0] = 0.0
+        mat[0, 1] = -x[2]
+        mat[0, 2] = x[1]
+        mat[1, 0] = x[2]
+        mat[1, 1] = 0.0
+        mat[1, 2] = -x[0]
+        mat[2, 0] = -x[1]
+        mat[2, 1] = x[0]
+        mat[2, 2] = 0.0
+        return mat
 
     @staticmethod
     def so3exp_torch(phi):
@@ -814,45 +817,51 @@ class TorchIEKF(torch.nn.Module):
         """Rotation around x-axis."""
         c = torch.cos(t)
         s = torch.sin(t)
-        zero = torch.tensor(0.0, dtype=t.dtype, device=t.device)
-        one = torch.tensor(1.0, dtype=t.dtype, device=t.device)
-        return torch.stack(
-            [
-                torch.stack([one, zero, zero]),
-                torch.stack([zero, c, -s]),
-                torch.stack([zero, s, c]),
-            ]
-        )
+        M = torch.zeros(3, 3, dtype=t.dtype, device=t.device)
+        M[0, 0] = 1.0
+        M[0, 1] = 0.0
+        M[0, 2] = 0.0
+        M[1, 0] = 0.0
+        M[1, 1] = c
+        M[1, 2] = -s
+        M[2, 0] = 0.0
+        M[2, 1] = s
+        M[2, 2] = c
+        return M
 
     @staticmethod
     def roty_torch(t):
         """Rotation around y-axis."""
         c = torch.cos(t)
         s = torch.sin(t)
-        zero = torch.tensor(0.0, dtype=t.dtype, device=t.device)
-        one = torch.tensor(1.0, dtype=t.dtype, device=t.device)
-        return torch.stack(
-            [
-                torch.stack([c, zero, s]),
-                torch.stack([zero, one, zero]),
-                torch.stack([-s, zero, c]),
-            ]
-        )
+        M = torch.zeros(3, 3, dtype=t.dtype, device=t.device)
+        M[0, 0] = c
+        M[0, 1] = 0.0
+        M[0, 2] = s
+        M[1, 0] = 0.0
+        M[1, 1] = 1.0
+        M[1, 2] = 0.0
+        M[2, 0] = -s
+        M[2, 1] = 0.0
+        M[2, 2] = c
+        return M
 
     @staticmethod
     def rotz_torch(t):
         """Rotation around z-axis."""
         c = torch.cos(t)
         s = torch.sin(t)
-        zero = torch.tensor(0.0, dtype=t.dtype, device=t.device)
-        one = torch.tensor(1.0, dtype=t.dtype, device=t.device)
-        return torch.stack(
-            [
-                torch.stack([c, -s, zero]),
-                torch.stack([s, c, zero]),
-                torch.stack([zero, zero, one]),
-            ]
-        )
+        M = torch.zeros(3, 3, dtype=t.dtype, device=t.device)
+        M[0, 0] = c
+        M[0, 1] = -s
+        M[0, 2] = 0.0
+        M[1, 0] = s
+        M[1, 1] = c
+        M[1, 2] = 0.0
+        M[2, 0] = 0.0
+        M[2, 1] = 0.0
+        M[2, 2] = 1.0
+        return M
 
     @staticmethod
     def outer(a, b):
