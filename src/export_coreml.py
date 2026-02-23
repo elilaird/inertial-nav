@@ -251,6 +251,7 @@ def trace_state_dict_and_convert_to_coreml(
             return traj
 
     wrapper = IEKFWrapper(iekf)
+    wrapper.eval()
 
     example_u = torch.randn(1, input_channels, seq_len)
     example_t = torch.linspace(0.0, float(seq_len - 1), steps=seq_len)
