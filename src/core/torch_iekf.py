@@ -155,7 +155,15 @@ class TorchIEKF(torch.nn.Module):
             ],
             dtype=torch.float32,
         )
-        self.register_buffer("Q", torch.diag(q_vals))
+        # self.register_buffer("Q", torch.diag(q_vals))
+        # Build diagonal Q explicitly to avoid torch.diag frontend issues
+        q_len = q_vals.shape[0]
+        Q_mat = torch.zeros(
+            q_len, q_len, dtype=q_vals.dtype, device=q_vals.device
+        )
+        idx = torch.arange(q_len, device=q_vals.device)
+        Q_mat[idx, idx] = q_vals
+        self.register_buffer("Q", Q_mat)
 
     # ------------------------------------------------------------------
     # Device helpers
@@ -659,8 +667,12 @@ class TorchIEKF(torch.nn.Module):
         # Innovation
         r = -v_body[1:]
 
-        # Measurement noise covariance
-        R = torch.diag(measurement_cov)
+        # Measurement noise covariance (explicit diagonal to avoid torch.diag issues)
+        R = torch.zeros(
+            2, 2, dtype=measurement_cov.dtype, device=measurement_cov.device
+        )
+        R[0, 0] = measurement_cov[0]
+        R[1, 1] = measurement_cov[1]
 
         # Perform update
         (
@@ -948,7 +960,15 @@ class TorchIEKF(torch.nn.Module):
             dtype=torch.float32,
             device=self.device,
         )
-        self.Q.data.copy_(torch.diag(q_vals))
+        # self.Q.data.copy_(torch.diag(q_vals))
+        # Build diagonal Q explicitly to avoid torch.diag frontend issues
+        q_len = q_vals.shape[0]
+        Q_mat = torch.zeros(
+            q_len, q_len, dtype=q_vals.dtype, device=q_vals.device
+        )
+        idx = torch.arange(q_len, device=q_vals.device)
+        Q_mat[idx, idx] = q_vals
+        self.register_buffer("Q", Q_mat)
 
         if self.initprocesscov_net is None:
             return
