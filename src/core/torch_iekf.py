@@ -814,8 +814,8 @@ class TorchIEKF(torch.nn.Module):
         """Rotation around x-axis."""
         c = torch.cos(t)
         s = torch.sin(t)
-        zero = torch.zeros((), dtype=t.dtype, device=t.device)
-        one = torch.ones((), dtype=t.dtype, device=t.device)
+        zero = torch.tensor(0.0, dtype=t.dtype, device=t.device)
+        one = torch.tensor(1.0, dtype=t.dtype, device=t.device)
         return torch.stack(
             [
                 torch.stack([one, zero, zero]),
@@ -829,8 +829,8 @@ class TorchIEKF(torch.nn.Module):
         """Rotation around y-axis."""
         c = torch.cos(t)
         s = torch.sin(t)
-        zero = torch.zeros((), dtype=t.dtype, device=t.device)
-        one = torch.ones((), dtype=t.dtype, device=t.device)
+        zero = torch.tensor(0.0, dtype=t.dtype, device=t.device)
+        one = torch.tensor(1.0, dtype=t.dtype, device=t.device)
         return torch.stack(
             [
                 torch.stack([c, zero, s]),
@@ -844,8 +844,8 @@ class TorchIEKF(torch.nn.Module):
         """Rotation around z-axis."""
         c = torch.cos(t)
         s = torch.sin(t)
-        zero = torch.zeros((), dtype=t.dtype, device=t.device)
-        one = torch.ones((), dtype=t.dtype, device=t.device)
+        zero = torch.tensor(0.0, dtype=t.dtype, device=t.device)
+        one = torch.tensor(1.0, dtype=t.dtype, device=t.device)
         return torch.stack(
             [
                 torch.stack([c, -s, zero]),
