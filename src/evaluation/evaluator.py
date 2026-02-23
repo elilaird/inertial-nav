@@ -236,6 +236,9 @@ def evaluate_sequence(iekf, dataset, dataset_name):
             process_noise_scaling = wm_out.process_noise_scaling
 
         N = len(t)
+        bias_noise_scaling = (
+            wm_out.bias_noise_scaling if wm_out is not None else None
+        )
         Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i = iekf.run(
             t,
             u,
@@ -247,6 +250,7 @@ def evaluate_sequence(iekf, dataset, dataset_name):
             bias_corrections=bias_corrections,
             gyro_corrections=gyro_corrections,
             process_noise_scaling=process_noise_scaling,
+            bias_noise_scaling=bias_noise_scaling,
         )
 
     # ---- World model uncertainty (epistemic + aleatoric) ----
@@ -287,6 +291,36 @@ def evaluate_sequence(iekf, dataset, dataset_name):
     ate_imu = compute_ate(p_imu, p_gt_np, align=True)
     orient_imu = compute_orientation_error(Rot_imu, Rot_gt)
 
+    # ---- world model internals (for posterior diagnostics) ----
+    wm_output_np = None
+    if wm_out is not None:
+        wm_output_np = {
+            "mu_z": (
+                wm_out.mu_z.cpu().numpy()
+                if wm_out.mu_z is not None else None
+            ),
+            "log_var_z": (
+                wm_out.log_var_z.cpu().numpy()
+                if wm_out.log_var_z is not None else None
+            ),
+            "measurement_covs": (
+                wm_out.measurement_covs.cpu().numpy()
+                if wm_out.measurement_covs is not None else None
+            ),
+            "gyro_bias_corrections": (
+                wm_out.gyro_bias_corrections.cpu().numpy()
+                if wm_out.gyro_bias_corrections is not None else None
+            ),
+            "acc_bias_corrections": (
+                wm_out.acc_bias_corrections.cpu().numpy()
+                if wm_out.acc_bias_corrections is not None else None
+            ),
+            "bias_noise_scaling": (
+                wm_out.bias_noise_scaling.cpu().numpy()
+                if wm_out.bias_noise_scaling is not None else None
+            ),
+        }
+
     return {
         "metrics": {
             "rpe": rpe,
@@ -318,6 +352,7 @@ def evaluate_sequence(iekf, dataset, dataset_name):
         "t": t_np,
         "measurements_covs": measurements_covs_np,
         "uncertainty": uncertainty,
+        "world_model_output": wm_output_np,
         "name": dataset_name,
     }
 
