@@ -2,8 +2,9 @@
 LatentWorldModel: probabilistic latent variable world model for the IEKF.
 
 Architecture:
-    IMUFeatureExtractor (shared CNN) → FC encoder head → (mu_z, log_var_z)
-    Reparameterization: z = mu_z + exp(0.5 * log_var_z) * epsilon
+    IMUFeatureExtractor (shared CNN) → FC encoder head → mu_z
+    Reparameterization: z = mu_z + exp(log_sigma) * epsilon
+        where log_sigma is a single learnable scalar (shared across all dims/timesteps)
     ProcessDecoder(z_sample)  → delta_b_omega, delta_b_a, Q_bias_scale
     MeasurementDecoder(mu_z)  → N_n (measurement covariance)
 
@@ -22,8 +23,13 @@ The two decoders use different z representations:
 
 At eval / deterministic mode (torch.no_grad): both decoders use mu_z.
 
-The KL term KL(q(z|x) || N(0,I)) is returned via mu_z / log_var_z fields
-in WorldModelOutput and added to the loss in the trainer.
+Using a single learnable scalar log_sigma (vs. per-element log_var_z) avoids
+posterior collapse and per-timestep variance instability while still allowing
+the noise injection scale to adapt during training.
+
+The KL term KL(q(z|x) || N(0,I)) simplifies to L2 regularisation on mu_z
+plus a constant term from log_sigma.  mu_z and log_var_z (= 2*log_sigma,
+broadcast) are returned in WorldModelOutput for the trainer's KL loss.
 """
 
 from dataclasses import dataclass
@@ -306,13 +312,16 @@ class LatentWorldModel(BaseCovarianceNet):
             dropout=cnn_dropout,
         )
 
-        # ---- encoder FC head: cnn_channels → 2 * latent_dim (no activation) ----
-        # self.encoder_fc = nn.Linear(cnn_channels, 2 * latent_dim)
+        # ---- encoder FC head: cnn_channels → latent_dim (mu_z only) ----
         self.encoder_fc = nn.Sequential(
             nn.Linear(cnn_channels, 2 * latent_dim),
             nn.ReLU(),
-            nn.Linear(2 * latent_dim, 2 * latent_dim),
+            nn.Linear(2 * latent_dim, latent_dim),
         )
+
+        # ---- single learnable noise scale for reparameterization ----
+        # Initialised at 0 → sigma = exp(0) = 1; KL well-defined from the start.
+        self.log_sigma = nn.Parameter(torch.zeros(1))
 
         # ---- decoders ----
         meas_cfg = dict(measurement_decoder or {})
@@ -355,16 +364,17 @@ class LatentWorldModel(BaseCovarianceNet):
         # CNN features: (N, cnn_channels)
         features = self.feature_extractor(u)
 
-        # Encoder FC: (N, 2 * latent_dim)
-        enc_out = self.encoder_fc(features)
-        mu_z = enc_out[:, : self.latent_dim]
-        log_var_z = enc_out[:, self.latent_dim :]
+        # Encoder FC: (N, latent_dim) — mu_z only
+        mu_z = self.encoder_fc(features)
+
+        # log_var_z broadcast from scalar: 2 * log_sigma gives the per-element
+        # log-variance used by the KL loss in the trainer.
+        log_var_z = self.log_sigma.mul(2).expand_as(mu_z)
 
         # Reparameterization: stochastic sample for process decoder only.
         # Measurement decoder always uses deterministic mu_z (see module docstring).
         if self.training:
-            epsilon = torch.randn_like(mu_z)
-            z_sample = mu_z + torch.exp(0.5 * log_var_z) * epsilon
+            z_sample = mu_z + torch.exp(self.log_sigma) * torch.randn_like(mu_z)
         else:
             z_sample = mu_z
 

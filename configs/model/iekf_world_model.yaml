@@ -107,8 +107,8 @@ networks:
         q_scale_clamp: 2.0    # Fix 1: clamp raw Q input to exp range [0.14, 7.4]
 
       # Near-zero init so decoders start as identity (no correction initially)
-      weight_scale: 0.1 # from 0.01
-      bias_scale: 0.1 # from 0.01
+      weight_scale: 0.01 # from 0.01
+      bias_scale: 0.01 # from 0.01
 
 # ------------------------------------------------------------------
 # Optimizer param-groups for the world model
