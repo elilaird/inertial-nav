@@ -155,15 +155,7 @@ class TorchIEKF(torch.nn.Module):
             ],
             dtype=torch.float32,
         )
-        # self.register_buffer("Q", torch.diag(q_vals))
-        # Build diagonal Q explicitly to avoid torch.diag frontend issues
-        q_len = q_vals.shape[0]
-        Q_mat = torch.zeros(
-            q_len, q_len, dtype=q_vals.dtype, device=q_vals.device
-        )
-        idx = torch.arange(q_len, device=q_vals.device)
-        Q_mat[idx, idx] = q_vals
-        self.register_buffer("Q", Q_mat)
+        self.register_buffer("Q", torch.diag(q_vals))
 
     # ------------------------------------------------------------------
     # Device helpers
@@ -352,9 +344,9 @@ class TorchIEKF(torch.nn.Module):
         P = self.init_covariance()
         Rot0 = self.from_rpy_torch(ang0[0], ang0[1], ang0[2])
         v0 = v_mes[0].clone()
-        p0 = torch.zeros(3, dtype=t.dtype, device=t.device)
-        b_omega0 = torch.zeros(3, dtype=t.dtype, device=t.device)
-        b_acc0 = torch.zeros(3, dtype=t.dtype, device=t.device)
+        p0 = t.new_zeros(3).float()
+        b_omega0 = t.new_zeros(3).float()
+        b_acc0 = t.new_zeros(3).float()
         Rot_c_i0 = torch.eye(3).float()
         t_c_i0 = t.new_zeros(3).float()
         return dict(
@@ -405,15 +397,13 @@ class TorchIEKF(torch.nn.Module):
         dt_chunk = t_chunk[1:] - t_chunk[:-1]  # (K-1,)
 
         # Allocate chunk trajectory tensors
-        Rot = torch.zeros(K, 3, 3, dtype=t_chunk.dtype, device=t_chunk.device)
-        v = torch.zeros(K, 3, dtype=t_chunk.dtype, device=t_chunk.device)
-        p = torch.zeros(K, 3, dtype=t_chunk.dtype, device=t_chunk.device)
-        b_omega = torch.zeros(K, 3, dtype=t_chunk.dtype, device=t_chunk.device)
-        b_acc = torch.zeros(K, 3, dtype=t_chunk.dtype, device=t_chunk.device)
-        Rot_c_i = torch.zeros(
-            K, 3, 3, dtype=t_chunk.dtype, device=t_chunk.device
-        )
-        t_c_i = torch.zeros(K, 3, dtype=t_chunk.dtype, device=t_chunk.device)
+        Rot = t_chunk.new_zeros(K, 3, 3).float()
+        v = t_chunk.new_zeros(K, 3).float()
+        p = t_chunk.new_zeros(K, 3).float()
+        b_omega = t_chunk.new_zeros(K, 3).float()
+        b_acc = t_chunk.new_zeros(K, 3).float()
+        Rot_c_i = t_chunk.new_zeros(K, 3, 3).float()
+        t_c_i = t_chunk.new_zeros(K, 3).float()
 
         # Seed first timestep from incoming state
         Rot[0] = state["Rot"]
@@ -484,13 +474,13 @@ class TorchIEKF(torch.nn.Module):
 
     def init_run(self, dt, u, p_mes, v_mes, N, ang0):
         """Initialize filter state arrays and covariance."""
-        Rot = torch.zeros(N, 3, 3, dtype=dt.dtype, device=dt.device)
-        v = torch.zeros(N, 3, dtype=dt.dtype, device=dt.device)
-        p = torch.zeros(N, 3, dtype=dt.dtype, device=dt.device)
-        b_omega = torch.zeros(N, 3, dtype=dt.dtype, device=dt.device)
-        b_acc = torch.zeros(N, 3, dtype=dt.dtype, device=dt.device)
-        Rot_c_i = torch.zeros(N, 3, 3, dtype=dt.dtype, device=dt.device)
-        t_c_i = torch.zeros(N, 3, dtype=dt.dtype, device=dt.device)
+        Rot = dt.new_zeros(N, 3, 3)
+        v = dt.new_zeros(N, 3)
+        p = dt.new_zeros(N, 3)
+        b_omega = dt.new_zeros(N, 3)
+        b_acc = dt.new_zeros(N, 3)
+        Rot_c_i = dt.new_zeros(N, 3, 3)
+        t_c_i = dt.new_zeros(N, 3)
 
         Rot_c_i[0] = self.Id3
         Rot[0] = self.from_rpy_torch(ang0[0], ang0[1], ang0[2])
@@ -505,17 +495,12 @@ class TorchIEKF(torch.nn.Module):
 
         Uses learned scaling factors when ``initprocesscov_net`` is set.
         """
-        P = torch.zeros(
-            self.P_dim,
-            self.P_dim,
-            dtype=self.IdP.dtype,
-            device=self.IdP.device,
-        )
+        P = self.IdP.new_zeros(self.P_dim, self.P_dim)
 
         if self.initprocesscov_net is not None:
             beta = self.initprocesscov_net.init_cov(self)
         else:
-            beta = torch.ones(6, dtype=self.IdP.dtype, device=self.IdP.device)
+            beta = self.IdP.new_ones(6)
 
         P[:2, :2] = self.cov_Rot0 * beta[0] * self.Id2
         P[3:5, 3:5] = self.cov_v0 * beta[1] * self.Id2
@@ -584,10 +569,8 @@ class TorchIEKF(torch.nn.Module):
         self, P, Rot_prev, v_prev, p_prev, b_omega_prev, b_acc_prev, u, dt
     ):
         """Propagate covariance matrix one timestep."""
-        F = torch.zeros(self.P_dim, self.P_dim, dtype=P.dtype, device=P.device)
-        G = torch.zeros(
-            self.P_dim, self.Q.shape[0], dtype=P.dtype, device=P.device
-        )
+        F = P.new_zeros(self.P_dim, self.P_dim)
+        G = P.new_zeros(self.P_dim, self.Q.shape[0])
         Q = self.Q.clone()
 
         v_skew_rot = self.skew_torch(v_prev).mm(Rot_prev)
@@ -667,12 +650,8 @@ class TorchIEKF(torch.nn.Module):
         # Innovation
         r = -v_body[1:]
 
-        # Measurement noise covariance (explicit diagonal to avoid torch.diag issues)
-        R = torch.zeros(
-            2, 2, dtype=measurement_cov.dtype, device=measurement_cov.device
-        )
-        R[0, 0] = measurement_cov[0]
-        R[1, 1] = measurement_cov[1]
+        # Measurement noise covariance
+        R = torch.diag(measurement_cov)
 
         # Perform update
         (
@@ -757,17 +736,14 @@ class TorchIEKF(torch.nn.Module):
     @staticmethod
     def skew_torch(x):
         """Skew-symmetric matrix from 3-vector."""
-        mat = torch.zeros(3, 3, dtype=x.dtype, device=x.device)
-        mat[0, 0] = 0.0
-        mat[0, 1] = -x[2]
-        mat[0, 2] = x[1]
-        mat[1, 0] = x[2]
-        mat[1, 1] = 0.0
-        mat[1, 2] = -x[0]
-        mat[2, 0] = -x[1]
-        mat[2, 1] = x[0]
-        mat[2, 2] = 0.0
-        return mat
+        zero = x.new_zeros(1).squeeze()
+        return torch.stack(
+            [
+                torch.stack([zero, -x[2], x[1]]),
+                torch.stack([x[2], zero, -x[0]]),
+                torch.stack([-x[1], x[0], zero]),
+            ]
+        )
 
     @staticmethod
     def so3exp_torch(phi):
@@ -775,9 +751,7 @@ class TorchIEKF(torch.nn.Module):
         angle = phi.norm()
         Id3 = torch.eye(3, dtype=phi.dtype, device=phi.device)
 
-        if isclose(
-            angle, torch.tensor(0.0, dtype=phi.dtype, device=phi.device)
-        ):
+        if isclose(angle, phi.new_tensor(0.0)):
             skew_phi = TorchIEKF.skew_torch(phi)
             return Id3 + skew_phi
 
@@ -795,7 +769,7 @@ class TorchIEKF(torch.nn.Module):
         angle = torch.norm(phi)
         Id3 = torch.eye(3, dtype=xi.dtype, device=xi.device)
 
-        if isclose(angle, torch.tensor(0.0, dtype=xi.dtype, device=xi.device)):
+        if isclose(angle, xi.new_tensor(0.0)):
             skew_phi = TorchIEKF.skew_torch(phi)
             J = Id3 + 0.5 * skew_phi
             Rot = Id3 + skew_phi
@@ -829,51 +803,45 @@ class TorchIEKF(torch.nn.Module):
         """Rotation around x-axis."""
         c = torch.cos(t)
         s = torch.sin(t)
-        M = torch.zeros(3, 3, dtype=t.dtype, device=t.device)
-        M[0, 0] = 1.0
-        M[0, 1] = 0.0
-        M[0, 2] = 0.0
-        M[1, 0] = 0.0
-        M[1, 1] = c
-        M[1, 2] = -s
-        M[2, 0] = 0.0
-        M[2, 1] = s
-        M[2, 2] = c
-        return M
+        zero = t.new_zeros(())
+        one = t.new_ones(())
+        return torch.stack(
+            [
+                torch.stack([one, zero, zero]),
+                torch.stack([zero, c, -s]),
+                torch.stack([zero, s, c]),
+            ]
+        )
 
     @staticmethod
     def roty_torch(t):
         """Rotation around y-axis."""
         c = torch.cos(t)
         s = torch.sin(t)
-        M = torch.zeros(3, 3, dtype=t.dtype, device=t.device)
-        M[0, 0] = c
-        M[0, 1] = 0.0
-        M[0, 2] = s
-        M[1, 0] = 0.0
-        M[1, 1] = 1.0
-        M[1, 2] = 0.0
-        M[2, 0] = -s
-        M[2, 1] = 0.0
-        M[2, 2] = c
-        return M
+        zero = t.new_zeros(())
+        one = t.new_ones(())
+        return torch.stack(
+            [
+                torch.stack([c, zero, s]),
+                torch.stack([zero, one, zero]),
+                torch.stack([-s, zero, c]),
+            ]
+        )
 
     @staticmethod
     def rotz_torch(t):
         """Rotation around z-axis."""
         c = torch.cos(t)
         s = torch.sin(t)
-        M = torch.zeros(3, 3, dtype=t.dtype, device=t.device)
-        M[0, 0] = c
-        M[0, 1] = -s
-        M[0, 2] = 0.0
-        M[1, 0] = s
-        M[1, 1] = c
-        M[1, 2] = 0.0
-        M[2, 0] = 0.0
-        M[2, 1] = 0.0
-        M[2, 2] = 1.0
-        return M
+        zero = t.new_zeros(())
+        one = t.new_ones(())
+        return torch.stack(
+            [
+                torch.stack([c, -s, zero]),
+                torch.stack([s, c, zero]),
+                torch.stack([zero, zero, one]),
+            ]
+        )
 
     @staticmethod
     def outer(a, b):
@@ -960,27 +928,14 @@ class TorchIEKF(torch.nn.Module):
             dtype=torch.float32,
             device=self.device,
         )
-        # self.Q.data.copy_(torch.diag(q_vals))
-        # Build diagonal Q explicitly to avoid torch.diag frontend issues
-        q_len = q_vals.shape[0]
-        Q_mat = torch.zeros(
-            q_len, q_len, dtype=q_vals.dtype, device=q_vals.device
-        )
-        idx = torch.arange(q_len, device=q_vals.device)
-        Q_mat[idx, idx] = q_vals
-        self.register_buffer("Q", Q_mat)
+        self.Q.data.copy_(torch.diag(q_vals))
 
         if self.initprocesscov_net is None:
             return
 
         # Apply learned scaling (create on same device as current Q buffer)
         beta = self.initprocesscov_net.init_processcov(self)
-        Q_new = torch.zeros(
-            self.Q.shape[0],
-            self.Q.shape[0],
-            dtype=self.Q.dtype,
-            device=self.Q.device,
-        )
+        Q_new = self.Q.new_zeros(self.Q.shape[0], self.Q.shape[0])
         Q_new[:3, :3] = self.cov_omega * beta[0] * self.Id3
         Q_new[3:6, 3:6] = self.cov_acc * beta[1] * self.Id3
         Q_new[6:9, 6:9] = self.cov_b_omega * beta[2] * self.Id3
