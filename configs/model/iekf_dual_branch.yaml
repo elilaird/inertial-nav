@@ -74,15 +74,15 @@ networks:
     enabled: true
     type: "DualBranchWorldModel"
 
-    # KL regularization (disabled; replaced by auxiliary prediction)
-    kl_weight: 0.0
+    # KL regularization (trains per-timestep uncertainty)
+    kl_weight: 0.001
     kl_anneal_epochs: 1
 
     # Auxiliary prediction loss weights
     auxiliary_prediction_weight: 0.2     # smoothed IMU mean (all 6 channels)
 
     # VICReg covariance regularization weight on mu_global
-    vicreg_cov_weight: 0.1
+    vicreg_cov_weight: 0.0 # (not needed when using KL)
 
     architecture:
       input_channels: 6

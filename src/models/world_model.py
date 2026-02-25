@@ -7,9 +7,9 @@ LatentWorldModel (single-branch):
 
 DualBranchWorldModel (dual-branch):
     LOCAL:  IMUFeatureExtractor (CNN, ~17 frames) → mu_local (deterministic) → MeasurementDecoder
-    GLOBAL: LSTM (full causal sequence) → mu_global + learnable scalar sigma → ProcessDecoder
+    GLOBAL: LSTM (full causal sequence) → mu_global, log_sigma_global (heteroscedastic) → ProcessDecoder
     Local branch is deterministic (no KL); regularized by L2 weight decay.
-    Global branch uses learnable scalar log_sigma_global (init -1, sigma≈0.37) + KL.
+    Global branch uses per-timestep heteroscedastic sigma from a separate LSTM readout head.
     mu_z / log_var_z contain global branch only for the trainer's KL loss.
 
 Decoder input conventions:
@@ -488,9 +488,11 @@ class DualBranchWorldModel(BaseCovarianceNet):
             batch_first=False,
         )
 
-        self.global_encoder_fc = nn.Linear(global_lstm_hidden, global_latent_dim)
-
-        self.log_sigma_global = nn.Parameter(torch.full((global_latent_dim,), -1.0))
+        self.global_mu_fc = nn.Linear(global_lstm_hidden, global_latent_dim)
+        self.global_log_sigma_fc = nn.Linear(global_lstm_hidden, global_latent_dim)
+        # Init: sigma starts at exp(-1) ≈ 0.37 per dimension, same as old scalar
+        nn.init.zeros_(self.global_log_sigma_fc.weight)
+        nn.init.constant_(self.global_log_sigma_fc.bias, -1.0)
 
         # LSTM hidden state for BPTT continuity
         self._lstm_hidden = None
@@ -592,22 +594,20 @@ class DualBranchWorldModel(BaseCovarianceNet):
         # (N, 1, hidden) → (N, hidden)
         lstm_features = lstm_out.squeeze(1)
 
-        mu_global = self.global_encoder_fc(
-            lstm_features
-        )  # (N, global_latent_dim)
+        mu_global = self.global_mu_fc(lstm_features)  # (N, global_latent_dim)
+        log_sigma_global = self.global_log_sigma_fc(lstm_features)  # (N, global_latent_dim)
+        log_sigma_global = log_sigma_global.clamp(min=-4.0, max=2.0)
 
         if self.training:
-            z_global = mu_global + torch.exp(
-                self.log_sigma_global
-            ) * torch.randn_like(mu_global)
+            z_global = mu_global + torch.exp(log_sigma_global) * torch.randn_like(
+                mu_global
+            )
         else:
             z_global = mu_global
 
         # ---- KL tensors (global branch only; local is deterministic) ----
         mu_z = mu_global
-        log_var_z = self.log_sigma_global.mul(2).expand(
-            N, self.global_latent_dim
-        )
+        log_var_z = log_sigma_global * 2  # (N, global_latent_dim) — per-timestep
 
         out = WorldModelOutput(
             mu_z=mu_z, log_var_z=log_var_z, mu_local=mu_local
