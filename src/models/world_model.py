@@ -1,35 +1,23 @@
 """
-LatentWorldModel: probabilistic latent variable world model for the IEKF.
+World models: probabilistic latent variable world models for the IEKF.
 
-Architecture:
-    IMUFeatureExtractor (shared CNN) → FC encoder head → mu_z
-    Reparameterization: z = mu_z + exp(log_sigma) * epsilon
-        where log_sigma is a single learnable scalar (shared across all dims/timesteps)
-    ProcessDecoder(z_sample)  → delta_b_omega, delta_b_a, Q_bias_scale
-    MeasurementDecoder(mu_z)  → N_n (measurement covariance)
+LatentWorldModel (single-branch):
+    IMUFeatureExtractor (CNN) → FC encoder → mu_z → decoders
+    Single latent z with ~17 timestep receptive field.
 
-The two decoders use different z representations:
+DualBranchWorldModel (dual-branch):
+    LOCAL:  IMUFeatureExtractor (CNN, ~17 frames) → mu_local → MeasurementDecoder
+    GLOBAL: LSTM (full causal sequence) → mu_global → ProcessDecoder
+    Separates local dynamics (measurement covariance) from long-range context
+    (bias corrections) into two latent branches with appropriate temporal scales.
 
-  - **Measurement decoder** receives deterministic ``mu_z``.  N_n is already
-    a covariance, so stochasticity in z would create variance *in* a noise
-    parameter with no natural home in the IEKF update.  The decoder learns
-    to output large N_n when mu_z is near the prior (uncertain context),
-    encoding the right epistemic behavior directly in its weights.
+Both models use learnable scalar log_sigma for reparameterization and return
+concatenated mu_z / log_var_z for the trainer's KL loss.
 
-  - **Process decoder** receives a stochastic sample ``z_sample`` via the
-    reparameterization trick.  The variance across samples propagates
-    context uncertainty into ``Q_bias_scale``, inflating the bias noise
-    covariance when the correction itself is uncertain.
-
-At eval / deterministic mode (torch.no_grad): both decoders use mu_z.
-
-Using a single learnable scalar log_sigma (vs. per-element log_var_z) avoids
-posterior collapse and per-timestep variance instability while still allowing
-the noise injection scale to adapt during training.
-
-The KL term KL(q(z|x) || N(0,I)) simplifies to L2 regularisation on mu_z
-plus a constant term from log_sigma.  mu_z and log_var_z (= 2*log_sigma,
-broadcast) are returned in WorldModelOutput for the trainer's KL loss.
+Decoder input conventions (both models):
+  - MeasurementDecoder receives deterministic mu (no stochasticity in covariance).
+  - ProcessDecoder receives stochastic z_sample (uncertainty → Q_bias_scale).
+  - At eval: both decoders use mu (no sampling).
 """
 
 from dataclasses import dataclass
@@ -403,3 +391,226 @@ class LatentWorldModel(BaseCovarianceNet):
     def get_output_dim(self):
         """Returns latent dimension."""
         return self.latent_dim
+
+
+class DualBranchWorldModel(BaseCovarianceNet):
+    """
+    Dual-branch latent world model: separate local (CNN) and global (LSTM) encoders.
+
+    The local branch uses a dilated CNN (~17 timestep receptive field) to encode
+    instantaneous motion dynamics for the MeasurementDecoder.  The global branch
+    uses an LSTM to accumulate full causal sequence context for the ProcessDecoder,
+    capturing slowly-varying bias drift and environment state.
+
+    Two independent VAE latent variables (z_local, z_global) each with their own
+    learnable scalar log_sigma.  KL tensors are concatenated so the trainer's
+    existing element-wise KL formula works unchanged.
+
+    For BPTT training, call ``reset_hidden()`` at sequence start and
+    ``detach_hidden()`` at chunk boundaries to implement truncated BPTT.
+
+    Args:
+        input_channels:         IMU channels (default 6: gyro + acc).
+        local_cnn_channels:     CNN hidden width for local branch.
+        local_kernel_size:      CNN kernel size for local branch.
+        local_cnn_dilation:     Dilation for second conv layer.
+        local_cnn_dropout:      Dropout probability for local CNN.
+        local_latent_dim:       Dimension of local latent z_local.
+        global_lstm_hidden:     LSTM hidden size for global branch.
+        global_lstm_layers:     Number of LSTM layers.
+        global_lstm_dropout:    Dropout between LSTM layers (0 if layers=1).
+        global_latent_dim:      Dimension of global latent z_global.
+        process_decoder_input:  "global" uses z_global only; "concat" uses
+                                cat(z_local, z_global) for the ProcessDecoder.
+        measurement_decoder:    Decoder config dict (or None/disabled to skip).
+        process_decoder:        Decoder config dict (or None/disabled to skip).
+        weight_scale:           Near-zero init multiplier for FC weights.
+        bias_scale:             Near-zero init multiplier for FC biases.
+    """
+
+    def __init__(
+        self,
+        input_channels: int = 6,
+        # Local branch (CNN)
+        local_cnn_channels: int = 32,
+        local_kernel_size: int = 5,
+        local_cnn_dilation: int = 3,
+        local_cnn_dropout: float = 0.5,
+        local_latent_dim: int = 8,
+        # Global branch (LSTM)
+        global_lstm_hidden: int = 32,
+        global_lstm_layers: int = 1,
+        global_lstm_dropout: float = 0.0,
+        global_latent_dim: int = 8,
+        # Decoder z input mode
+        process_decoder_input: str = "global",
+        # Decoders
+        measurement_decoder: Optional[dict] = None,
+        process_decoder: Optional[dict] = None,
+        # Init scales
+        weight_scale: float = 0.01,
+        bias_scale: float = 0.01,
+    ):
+        super().__init__()
+        self.local_latent_dim = local_latent_dim
+        self.global_latent_dim = global_latent_dim
+        self.process_decoder_input = process_decoder_input
+
+        # ---- LOCAL BRANCH: CNN backbone ----
+        self.feature_extractor = IMUFeatureExtractor(
+            input_channels=input_channels,
+            cnn_channels=local_cnn_channels,
+            kernel_size=local_kernel_size,
+            dilation=local_cnn_dilation,
+            dropout=local_cnn_dropout,
+        )
+
+        self.local_encoder_fc = nn.Sequential(
+            nn.Linear(local_cnn_channels, 2 * local_latent_dim),
+            nn.ReLU(),
+            nn.Linear(2 * local_latent_dim, local_latent_dim),
+        )
+
+        self.log_sigma_local = nn.Parameter(torch.zeros(1))
+
+        # ---- GLOBAL BRANCH: LSTM ----
+        self.lstm = nn.LSTM(
+            input_size=input_channels,
+            hidden_size=global_lstm_hidden,
+            num_layers=global_lstm_layers,
+            dropout=global_lstm_dropout if global_lstm_layers > 1 else 0.0,
+            batch_first=False,
+        )
+
+        self.global_encoder_fc = nn.Sequential(
+            nn.Linear(global_lstm_hidden, 2 * global_latent_dim),
+            nn.ReLU(),
+            nn.Linear(2 * global_latent_dim, global_latent_dim),
+        )
+
+        self.log_sigma_global = nn.Parameter(torch.zeros(1))
+
+        # LSTM hidden state for BPTT continuity
+        self._lstm_hidden = None
+
+        # ---- DECODERS ----
+        # ProcessDecoder input dimension depends on mode
+        if process_decoder_input == "concat":
+            proc_latent_dim = local_latent_dim + global_latent_dim
+        else:
+            proc_latent_dim = global_latent_dim
+
+        meas_cfg = dict(measurement_decoder or {})
+        self.measurement_dec: Optional[MeasurementDecoder] = None
+        if meas_cfg.get("enabled", False):
+            self.measurement_dec = MeasurementDecoder(
+                latent_dim=local_latent_dim,
+                beta=meas_cfg.get("beta", 3.0),
+                weight_scale=weight_scale,
+                bias_scale=bias_scale,
+            )
+
+        proc_cfg = dict(process_decoder or {})
+        self.process_dec: Optional[ProcessDecoder] = None
+        if proc_cfg.get("enabled", False):
+            self.process_dec = ProcessDecoder(
+                latent_dim=proc_latent_dim,
+                alpha=proc_cfg.get("alpha", 3.0),
+                weight_scale=weight_scale,
+                bias_scale=bias_scale,
+                use_bias_noise_scaling=proc_cfg.get("use_bias_noise_scaling", True),
+                q_scale_clamp=proc_cfg.get("q_scale_clamp", 2.0),
+            )
+
+    # ------------------------------------------------------------------ #
+    # LSTM state management (for BPTT)
+    # ------------------------------------------------------------------ #
+
+    def reset_hidden(self):
+        """Zero LSTM hidden state. Call at the start of each new sequence."""
+        self._lstm_hidden = None
+
+    def detach_hidden(self):
+        """Detach LSTM hidden state from graph. Call at BPTT chunk boundaries."""
+        if self._lstm_hidden is not None:
+            self._lstm_hidden = tuple(h.detach() for h in self._lstm_hidden)
+
+    # ------------------------------------------------------------------ #
+    # Forward
+    # ------------------------------------------------------------------ #
+
+    def forward(self, u: torch.Tensor, iekf=None) -> WorldModelOutput:
+        """
+        Run dual-branch encoder + reparameterization + decoders.
+
+        Args:
+            u:    (1, C, N) normalized IMU tensor.
+            iekf: TorchIEKF instance (provides ``cov0_measurement`` and ``Q``).
+
+        Returns:
+            ``WorldModelOutput`` dataclass with concatenated mu_z / log_var_z.
+        """
+        N = u.shape[2]
+
+        # ---- LOCAL BRANCH (CNN) ----
+        features = self.feature_extractor(u)  # (N, cnn_channels)
+        mu_local = self.local_encoder_fc(features)  # (N, local_latent_dim)
+
+        if self.training:
+            z_local = mu_local + torch.exp(self.log_sigma_local) * torch.randn_like(
+                mu_local
+            )
+        else:
+            z_local = mu_local
+
+        # ---- GLOBAL BRANCH (LSTM) ----
+        # (1, C, N) → (N, 1, C) for LSTM (seq_len, batch, features)
+        lstm_input = u.squeeze(0).t().unsqueeze(1)
+        lstm_out, self._lstm_hidden = self.lstm(lstm_input, self._lstm_hidden)
+        # (N, 1, hidden) → (N, hidden)
+        lstm_features = lstm_out.squeeze(1)
+
+        mu_global = self.global_encoder_fc(lstm_features)  # (N, global_latent_dim)
+
+        if self.training:
+            z_global = mu_global + torch.exp(
+                self.log_sigma_global
+            ) * torch.randn_like(mu_global)
+        else:
+            z_global = mu_global
+
+        # ---- KL tensors (concatenated for trainer compatibility) ----
+        mu_z = torch.cat([mu_local, mu_global], dim=1)
+        log_var_local = self.log_sigma_local.mul(2).expand(N, self.local_latent_dim)
+        log_var_global = self.log_sigma_global.mul(2).expand(N, self.global_latent_dim)
+        log_var_z = torch.cat([log_var_local, log_var_global], dim=1)
+
+        out = WorldModelOutput(mu_z=mu_z, log_var_z=log_var_z)
+
+        # ---- measurement decoder (deterministic mu_local) ----
+        if self.measurement_dec is not None and iekf is not None:
+            out.measurement_covs = self.measurement_dec(
+                mu_local, iekf.cov0_measurement
+            )
+
+        # ---- process decoder (stochastic z_global or concat) ----
+        if self.process_dec is not None and iekf is not None:
+            if self.process_decoder_input == "concat":
+                z_proc = torch.cat([z_local, z_global], dim=1)
+            else:
+                z_proc = z_global
+
+            sigma_bw = iekf.Q[9, 9].sqrt()
+            sigma_ba = iekf.Q[12, 12].sqrt()
+            delta_b_omega, delta_b_a, Q_bias_scale = self.process_dec(
+                z_proc, sigma_bw, sigma_ba
+            )
+            out.gyro_bias_corrections = delta_b_omega
+            out.acc_bias_corrections = delta_b_a
+            out.bias_noise_scaling = Q_bias_scale
+
+        return out
+
+    def get_output_dim(self):
+        """Returns total latent dimension (local + global)."""
+        return self.local_latent_dim + self.global_latent_dim

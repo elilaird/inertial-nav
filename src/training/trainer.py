@@ -548,6 +548,11 @@ class Trainer:
         state = self.model.init_state(t, u, v_gt, ang_gt[0])
         state = TorchIEKF.detach_state(state)
 
+        # Reset LSTM hidden state for new sequence (DualBranchWorldModel)
+        wm = getattr(self.model, "world_model", None)
+        if wm is not None and hasattr(wm, "reset_hidden"):
+            wm.reset_hidden()
+
         totals = {"loss": 0.0, "kl": 0.0}
         n_valid = 0
         n_skipped = 0
@@ -642,6 +647,8 @@ class Trainer:
                     flush=True,
                 )
                 state = TorchIEKF.detach_state(new_state)
+                if wm is not None and hasattr(wm, "detach_hidden"):
+                    wm.detach_hidden()
                 continue
 
             loss.backward()
@@ -669,6 +676,8 @@ class Trainer:
 
             # ---- BPTT cut: detach state before next chunk ----
             state = TorchIEKF.detach_state(new_state)
+            if wm is not None and hasattr(wm, "detach_hidden"):
+                wm.detach_hidden()
 
             if self.fast_dev_run:
                 break
@@ -724,6 +733,9 @@ class Trainer:
 
         # World model overrides / augments standalone networks
         bias_noise_scaling = None
+        wm = getattr(self.model, "world_model", None)
+        if wm is not None and hasattr(wm, "reset_hidden"):
+            wm.reset_hidden()
         wm_out = self.model.forward_world_model(u)
         if wm_out is not None:
             if wm_out.measurement_covs is not None:

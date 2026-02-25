@@ -15,7 +15,7 @@ from src.models.base_covariance_net import BaseCovarianceNet
 from src.models.init_process_cov_net import InitProcessCovNet
 from src.models.measurement_cov_net import MeasurementCovNet
 from src.models.learned_bias_correction_net import LearnedBiasCorrectionNet
-from src.models.world_model import LatentWorldModel
+from src.models.world_model import LatentWorldModel, DualBranchWorldModel
 
 # Model registry
 _MODEL_REGISTRY = {}
@@ -56,3 +56,4 @@ register_model(InitProcessCovNet)
 register_model(MeasurementCovNet)
 register_model(LearnedBiasCorrectionNet)
 register_model(LatentWorldModel)
+register_model(DualBranchWorldModel)

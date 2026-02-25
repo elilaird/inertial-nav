@@ -1,0 +1,125 @@
+# IEKF with DualBranchWorldModel: separate local (CNN) and global (LSTM) latent branches.
+#
+# LOCAL branch: dilated CNN (~17 timestep receptive field) encodes instantaneous
+#   motion dynamics → MeasurementDecoder → N_n
+# GLOBAL branch: LSTM (full causal sequence) encodes slowly-varying bias/environment
+#   state → ProcessDecoder → delta_b_omega, delta_b_a, Q_bias_scale
+#
+# Two independent KL terms (concatenated): Loss = t_rel + kl_weight * KL_total
+
+name: "iekf_dual_branch"
+
+# ------------------------------------------------------------------
+# State / physics: identical to iekf_world_model
+# ------------------------------------------------------------------
+state_dim:
+  rotation: 9
+  velocity: 3
+  position: 3
+  bias_gyro: 3
+  bias_acc: 3
+  rotation_c_i: 9
+  translation_c_i: 3
+  total: 33
+
+P_dim: 21
+
+physics:
+  gravity: [0.0, 0.0, -9.80655]
+
+  process_noise:
+    cov_omega: 2.0e-4
+    cov_acc: 1.0e-3
+    cov_b_omega: 1.0e-8
+    cov_b_acc: 1.0e-6
+    cov_Rot_c_i: 1.0e-8
+    cov_t_c_i: 1.0e-8
+
+  initial_covariance:
+    cov_Rot0: 1.0e-6
+    cov_v0: 1.0e-1
+    cov_b_omega0: 1.0e-8
+    cov_b_acc0: 1.0e-3
+    cov_Rot_c_i0: 1.0e-5
+    cov_t_c_i0: 1.0e-2
+
+  measurement_noise:
+    cov_lat: 1.0
+    cov_up: 10.0
+
+# ------------------------------------------------------------------
+# Networks
+# ------------------------------------------------------------------
+networks:
+  # InitProcessCovNet – always on (learns P0 and base Q)
+  init_process_cov:
+    enabled: true
+    type: "InitProcessCovNet"
+    architecture:
+      output_dim: 6
+      initial_beta: 3.0
+      weight_scale: 10.0
+
+  # Standalone nets – disabled when world model decoders subsume them
+  measurement_cov:
+    enabled: false
+    type: "MeasurementCovNet"
+
+  bias_correction:
+    enabled: false
+    type: "LearnedBiasCorrectionNet"
+
+  # Dual-branch latent variable world model
+  world_model:
+    enabled: true
+    type: "DualBranchWorldModel"
+
+    # KL regularization (beta-VAE weighting)
+    kl_weight: 1.0e-5
+    kl_anneal_epochs: 1
+
+    architecture:
+      input_channels: 6
+
+      # LOCAL branch: CNN for instantaneous dynamics
+      local_cnn_channels: 32
+      local_kernel_size: 5
+      local_cnn_dilation: 3
+      local_cnn_dropout: 0.1
+      local_latent_dim: 8
+
+      # GLOBAL branch: LSTM for long-range context
+      global_lstm_hidden: 32
+      global_lstm_layers: 1
+      global_lstm_dropout: 0.0
+      global_latent_dim: 8
+
+      # ProcessDecoder z input: "global" (z_global only) or "concat" (z_local + z_global)
+      process_decoder_input: "global"
+
+      # MeasurementDecoder: mu_local → N_n
+      measurement_decoder:
+        enabled: true
+        beta: 3.0
+
+      # ProcessDecoder: z_global → delta_b_omega, delta_b_a, Q_bias_scale
+      process_decoder:
+        enabled: true
+        alpha: 3.0
+        use_bias_noise_scaling: false
+        q_scale_clamp: 2.0
+
+      # Near-zero init so decoders start as identity
+      weight_scale: 0.01
+      bias_scale: 0.01
+
+# ------------------------------------------------------------------
+# Optimizer param-groups
+# ------------------------------------------------------------------
+optimizer:
+  param_groups:
+    init_process_cov_net:
+      lr: 1.0e-4
+    world_model:
+      lr: 1.0e-4
+      weight_decay: 0.0

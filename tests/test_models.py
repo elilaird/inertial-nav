@@ -12,7 +12,17 @@ from src.models.base_covariance_net import BaseCovarianceNet
 from src.models.init_process_cov_net import InitProcessCovNet
 from src.models.measurement_cov_net import MeasurementCovNet
 from src.models.learned_bias_correction_net import LearnedBiasCorrectionNet
-from src.models.world_model import WorldModel, WorldModelOutput
+from src.models.world_model import (
+    WorldModelOutput,
+    LatentWorldModel,
+    DualBranchWorldModel,
+)
+
+# Backwards-compat alias for older tests referencing the removed WorldModel class
+try:
+    from src.models.world_model import WorldModel
+except ImportError:
+    WorldModel = None
 from src.core.torch_iekf import TorchIEKF
 
 
@@ -25,7 +35,8 @@ class TestModelRegistry:
         assert "InitProcessCovNet" in names
         assert "MeasurementCovNet" in names
         assert "LearnedBiasCorrectionNet" in names
-        assert "WorldModel" in names
+        assert "LatentWorldModel" in names
+        assert "DualBranchWorldModel" in names
 
     def test_get_model_returns_class(self):
         cls = get_model("MeasurementCovNet")
@@ -464,6 +475,168 @@ class TestWorldModel:
         cnn_weight = list(self.model.feature_extractor.parameters())[0]
         assert cnn_weight.grad is not None
         assert cnn_weight.grad.abs().sum() > 0
+
+
+# ==================== DualBranchWorldModel Tests ====================
+
+
+class TestDualBranchWorldModel:
+    """Tests for the DualBranchWorldModel with separate local (CNN) and global (LSTM) branches."""
+
+    def _make_model(self, **overrides):
+        """Build a DualBranchWorldModel with both decoders enabled by default."""
+        kwargs = {
+            "input_channels": 6,
+            "local_cnn_channels": 16,
+            "local_kernel_size": 5,
+            "local_cnn_dilation": 3,
+            "local_cnn_dropout": 0.0,
+            "local_latent_dim": 4,
+            "global_lstm_hidden": 16,
+            "global_lstm_layers": 1,
+            "global_lstm_dropout": 0.0,
+            "global_latent_dim": 4,
+            "process_decoder_input": "global",
+            "measurement_decoder": {"enabled": True, "beta": 3.0},
+            "process_decoder": {
+                "enabled": True,
+                "alpha": 3.0,
+                "use_bias_noise_scaling": False,
+                "q_scale_clamp": 2.0,
+            },
+            "weight_scale": 0.01,
+            "bias_scale": 0.01,
+        }
+        kwargs.update(overrides)
+        return DualBranchWorldModel(**kwargs)
+
+    def setup_method(self):
+        self.model = self._make_model()
+        self.iekf = TorchIEKF()
+        self.seq_len = 50
+        self.u = torch.randn(1, 6, self.seq_len).float()
+
+    def test_forward_shapes(self):
+        """All output fields should have correct dimensions."""
+        out = self.model(self.u, self.iekf)
+        assert isinstance(out, WorldModelOutput)
+        assert out.measurement_covs.shape == (self.seq_len, 2)
+        assert out.acc_bias_corrections.shape == (self.seq_len, 3)
+        assert out.gyro_bias_corrections.shape == (self.seq_len, 3)
+        # mu_z and log_var_z are concatenated: local_latent_dim + global_latent_dim
+        assert out.mu_z.shape == (self.seq_len, 4 + 4)
+        assert out.log_var_z.shape == (self.seq_len, 4 + 4)
+
+    def test_measurement_covs_positive(self):
+        out = self.model(self.u, self.iekf)
+        assert (out.measurement_covs > 0).all()
+
+    def test_lstm_state_persistence(self):
+        """LSTM hidden state should persist across sequential calls."""
+        self.model.reset_hidden()
+        out1 = self.model(self.u, self.iekf)
+        assert self.model._lstm_hidden is not None
+
+        # Second call without reset — LSTM has state from first call
+        u2 = torch.randn(1, 6, 30).float()
+        out2_stateful = self.model(u2, self.iekf)
+
+        # Compare with stateless call
+        self.model.reset_hidden()
+        out2_stateless = self.model(u2, self.iekf)
+
+        # Global branch outputs should differ (local branch is identical)
+        # mu_z[:, 4:] is the global part
+        assert not torch.allclose(
+            out2_stateful.mu_z[:, 4:], out2_stateless.mu_z[:, 4:]
+        )
+
+    def test_reset_hidden(self):
+        """reset_hidden should clear LSTM state."""
+        self.model(self.u, self.iekf)
+        assert self.model._lstm_hidden is not None
+        self.model.reset_hidden()
+        assert self.model._lstm_hidden is None
+
+    def test_detach_hidden(self):
+        """detach_hidden should detach tensors from computation graph."""
+        self.model(self.u, self.iekf)
+        assert self.model._lstm_hidden is not None
+        self.model.detach_hidden()
+        for h in self.model._lstm_hidden:
+            assert not h.requires_grad
+
+    def test_concat_mode(self):
+        """process_decoder_input='concat' should work and use both latents."""
+        model = self._make_model(process_decoder_input="concat")
+        out = model(self.u, self.iekf)
+        assert out.acc_bias_corrections.shape == (self.seq_len, 3)
+        assert out.gyro_bias_corrections.shape == (self.seq_len, 3)
+        # ProcessDecoder first layer should have input dim = 4 + 4 = 8
+        first_layer = model.process_dec.bias_net[0]
+        assert first_layer.in_features == 8
+
+    def test_global_only_mode(self):
+        """process_decoder_input='global' should use only global latent."""
+        model = self._make_model(process_decoder_input="global")
+        first_layer = model.process_dec.bias_net[0]
+        assert first_layer.in_features == 4  # global_latent_dim only
+
+    def test_gradients_flow_both_branches(self):
+        """Gradients should flow through both CNN and LSTM branches."""
+        out = self.model(self.u, self.iekf)
+        loss = out.measurement_covs.sum() + out.acc_bias_corrections.sum()
+        loss.backward()
+
+        # CNN (local branch) should have gradients
+        cnn_weight = list(self.model.feature_extractor.parameters())[0]
+        assert cnn_weight.grad is not None
+        assert cnn_weight.grad.abs().sum() > 0
+
+        # LSTM (global branch) should have gradients
+        lstm_weight = list(self.model.lstm.parameters())[0]
+        assert lstm_weight.grad is not None
+        assert lstm_weight.grad.abs().sum() > 0
+
+    def test_near_zero_init(self):
+        """Decoder outputs should start near zero/identity."""
+        self.model.eval()
+        with torch.no_grad():
+            out = self.model(self.u, self.iekf)
+        assert out.acc_bias_corrections.abs().max() < 0.05
+
+    def test_get_output_dim(self):
+        assert self.model.get_output_dim() == 4 + 4  # local + global
+
+    def test_registry(self):
+        """DualBranchWorldModel should be in the model registry."""
+        assert "DualBranchWorldModel" in list_models()
+        assert get_model("DualBranchWorldModel") is DualBranchWorldModel
+
+    def test_eval_no_sampling(self):
+        """In eval mode, z_local and z_global should equal mu (no noise)."""
+        self.model.eval()
+        with torch.no_grad():
+            out1 = self.model(self.u, self.iekf)
+            self.model.reset_hidden()
+            out2 = self.model(self.u, self.iekf)
+        # Deterministic — same input, same output
+        assert torch.allclose(out1.mu_z, out2.mu_z)
+        assert torch.allclose(out1.measurement_covs, out2.measurement_covs)
+
+    def test_disabled_decoders(self):
+        """Disabled decoders should return None."""
+        model = self._make_model(
+            measurement_decoder={"enabled": False},
+            process_decoder={"enabled": False},
+        )
+        out = model(self.u, self.iekf)
+        assert out.measurement_covs is None
+        assert out.acc_bias_corrections is None
+        assert out.gyro_bias_corrections is None
+        # KL tensors should still be present
+        assert out.mu_z is not None
+        assert out.log_var_z is not None
 
 
 # ==================== TorchIEKF + WorldModel Integration ====================
