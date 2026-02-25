@@ -95,7 +95,7 @@ networks:
       global_latent_dim: 8
 
       # ProcessDecoder z input: "global" (z_global only) or "concat" (z_local + z_global)
-      process_decoder_input: "global"
+      process_decoder_input: "concat"
 
       # MeasurementDecoder: mu_local → N_n
       measurement_decoder:
@@ -110,8 +110,8 @@ networks:
         q_scale_clamp: 2.0
 
       # Near-zero init so decoders start as identity
-      weight_scale: 0.01
-      bias_scale: 0.01
+      weight_scale: 0.1
+      bias_scale: 0.1
 
 # ------------------------------------------------------------------
 # Optimizer param-groups
