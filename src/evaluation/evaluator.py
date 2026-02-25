@@ -138,19 +138,27 @@ def _compute_world_model_uncertainty(
     acc_samples = []
     gyro_samples = []
 
+    # For DualBranchWorldModel, mu_z is concatenated [mu_local | mu_global].
+    # Split so each decoder receives only its own latent slice.
+    local_dim = getattr(wm, "local_latent_dim", mu_z.shape[1])
+    mu_meas = mu_z[:, :local_dim]
+    mu_proc = mu_z[:, local_dim:]
+    sigma_meas = sigma_z[:, :local_dim]
+    sigma_proc = sigma_z[:, local_dim:] if mu_proc.shape[1] > 0 else sigma_z
+
     with torch.no_grad():
         for _ in range(n_mc):
-            eps = torch.randn_like(mu_z)
-            z_sample = mu_z + sigma_z * eps
+            z_meas = mu_meas + sigma_meas * torch.randn_like(mu_meas)
+            z_proc = mu_proc + sigma_proc * torch.randn_like(mu_proc) if mu_proc.shape[1] > 0 else mu_meas + sigma_meas * torch.randn_like(mu_meas)
 
             if wm.measurement_dec is not None:
-                meas_cov = wm.measurement_dec(z_sample, iekf.cov0_measurement)
+                meas_cov = wm.measurement_dec(z_meas, iekf.cov0_measurement)
                 meas_samples.append(meas_cov)  # (N, 2)
 
             if wm.process_dec is not None:
                 sigma_bw = iekf.Q[9, 9].sqrt()
                 sigma_ba = iekf.Q[12, 12].sqrt()
-                d_bw, d_ba, _ = wm.process_dec(z_sample, sigma_bw, sigma_ba)
+                d_bw, d_ba, _ = wm.process_dec(z_proc, sigma_bw, sigma_ba)
                 acc_samples.append(d_ba)  # (N, 3)
                 gyro_samples.append(d_bw)  # (N, 3)
 
@@ -220,6 +228,10 @@ def evaluate_sequence(iekf, dataset, dataset_name):
 
     iekf.eval()
     with torch.no_grad():
+        # Reset LSTM state so eval runs from clean state (DualBranchWorldModel)
+        wm = getattr(iekf, "world_model", None)
+        if wm is not None and hasattr(wm, "reset_hidden"):
+            wm.reset_hidden()
         measurements_covs = iekf.forward_nets(u)
         bias_corrections = iekf.forward_bias_net(u)
         gyro_corrections = None
