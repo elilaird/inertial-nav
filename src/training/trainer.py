@@ -74,6 +74,7 @@ class Trainer:
         self.kl_weight = wm_cfg.get("kl_weight", 0.0)
         self.kl_anneal_epochs = wm_cfg.get("kl_anneal_epochs", 50)
         self.aux_pred_weight = wm_cfg.get("auxiliary_prediction_weight", 0.0)
+        self.vicreg_cov_weight = wm_cfg.get("vicreg_cov_weight", 0.0)
         self.current_epoch = 0
 
         # Gradient clipping
@@ -563,7 +564,7 @@ class Trainer:
         if wm is not None and hasattr(wm, "reset_hidden"):
             wm.reset_hidden()
 
-        totals = {"loss": 0.0, "kl": 0.0, "aux_imu": 0.0}
+        totals = {"loss": 0.0, "kl": 0.0, "aux_imu": 0.0, "vicreg_cov": 0.0}
         n_valid = 0
         n_skipped = 0
         gnorms = []
@@ -664,6 +665,22 @@ class Trainer:
                     chunk_aux = (self.aux_pred_weight * aux_loss).item()
                     loss = loss + self.aux_pred_weight * aux_loss
 
+            # VICReg covariance regularization on mu_global (per-chunk)
+            chunk_cov = 0.0
+            if (
+                self.vicreg_cov_weight > 0
+                and wm_c is not None
+                and wm_c.mu_z is not None
+            ):
+                Z = wm_c.mu_z  # (chunk_len, d)
+                d = Z.shape[1]
+                if Z.shape[0] > 1:
+                    Z_c = Z - Z.mean(dim=0)
+                    cov = (Z_c.T @ Z_c) / (Z.shape[0] - 1)
+                    cov_loss = (cov.pow(2).sum() - cov.pow(2).diagonal().sum()) / d
+                    chunk_cov = (self.vicreg_cov_weight * cov_loss).item()
+                    loss = loss + self.vicreg_cov_weight * cov_loss
+
             # Loss clamping and skipping
             max_loss = self.loss_cfg.get("max_loss", None)
             if max_loss is not None and isinstance(loss, torch.Tensor):
@@ -701,6 +718,7 @@ class Trainer:
                 totals["loss"] += loss.item()
                 totals["kl"] += chunk_kl
                 totals["aux_imu"] += chunk_aux
+                totals["vicreg_cov"] += chunk_cov
                 gnorms.append(float(g_norm))
                 if wm_c is not None and wm_c.log_var_z is not None:
                     sigma_z_vals.append(
@@ -841,6 +859,22 @@ class Trainer:
                 aux_loss = torch.nn.functional.mse_loss(pred, u_target.detach())
                 losses["aux_imu"] = (self.aux_pred_weight * aux_loss).item()
                 loss = loss + self.aux_pred_weight * aux_loss
+
+        # VICReg covariance regularization on mu_global (DualBranchWorldModel)
+        if (
+            isinstance(loss, torch.Tensor)
+            and self.vicreg_cov_weight > 0
+            and wm_out is not None
+            and wm_out.mu_z is not None
+        ):
+            Z = wm_out.mu_z  # (N, d) — mu_global
+            d = Z.shape[1]
+            if Z.shape[0] > 1:
+                Z_c = Z - Z.mean(dim=0)
+                cov = (Z_c.T @ Z_c) / (Z.shape[0] - 1)
+                cov_loss = (cov.pow(2).sum() - cov.pow(2).diagonal().sum()) / d
+                losses["vicreg_cov"] = (self.vicreg_cov_weight * cov_loss).item()
+                loss = loss + self.vicreg_cov_weight * cov_loss
 
         # Loss clamping (Huber-like): clamp loss to max_loss so gradients still flow
         max_loss = self.loss_cfg.get("max_loss", None)

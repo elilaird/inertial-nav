@@ -81,6 +81,9 @@ networks:
     # Auxiliary IMU prediction loss weight
     auxiliary_prediction_weight: 1.0
 
+    # VICReg covariance regularization weight on mu_global
+    vicreg_cov_weight: 1.0
+
     architecture:
       input_channels: 6
 
