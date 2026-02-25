@@ -1,0 +1,89 @@
+# Condition B: World model with measurement head only (process head disabled).
+# Used in posterior validation ablation study.
+
+name: "iekf_wm_meas_only"
+
+# State / physics: identical to iekf_world_model
+state_dim:
+  rotation: 9
+  velocity: 3
+  position: 3
+  bias_gyro: 3
+  bias_acc: 3
+  rotation_c_i: 9
+  translation_c_i: 3
+  total: 33
+
+P_dim: 21
+
+physics:
+  gravity: [0.0, 0.0, -9.80655]
+
+  process_noise:
+    cov_omega: 2.0e-4
+    cov_acc: 1.0e-3
+    cov_b_omega: 1.0e-8
+    cov_b_acc: 1.0e-6
+    cov_Rot_c_i: 1.0e-8
+    cov_t_c_i: 1.0e-8
+
+  initial_covariance:
+    cov_Rot0: 1.0e-6
+    cov_v0: 1.0e-1
+    cov_b_omega0: 1.0e-8
+    cov_b_acc0: 1.0e-3
+    cov_Rot_c_i0: 1.0e-5
+    cov_t_c_i0: 1.0e-2
+
+  measurement_noise:
+    cov_lat: 1.0
+    cov_up: 10.0
+
+networks:
+  init_process_cov:
+    enabled: true
+    type: "InitProcessCovNet"
+    architecture:
+      output_dim: 6
+      initial_beta: 3.0
+      weight_scale: 10.0
+
+  measurement_cov:
+    enabled: false
+
+  bias_correction:
+    enabled: false
+
+  world_model:
+    enabled: true
+    type: "LatentWorldModel"
+
+    kl_weight: 1.0e-4
+    kl_anneal_epochs: 1
+
+    architecture:
+      input_channels: 6
+      cnn_channels: 32
+      kernel_size: 5
+      cnn_dilation: 3
+      cnn_dropout: 0.1
+      latent_dim: 8
+
+      measurement_decoder:
+        enabled: true
+        beta: 3.0
+
+      # Process head DISABLED for Condition B
+      process_decoder:
+        enabled: false
+
+      weight_scale: 0.01
+      bias_scale: 0.01
+
+optimizer:
+  param_groups:
+    init_process_cov_net:
+      lr: 1.0e-4
+    world_model:
+      lr: 1.0e-4
+      weight_decay: 0.0

@@ -1,0 +1,46 @@
+# KITTI dataset config for posterior validation ablation study.
+# Test sequences: 01, 04, 06, 07, 08, 09, 10 (matching AI-IMU paper Table 1).
+
+name: "kitti"
+
+min_seq_dim: 2500
+
+datasets_fake:
+  - "2011_09_26_drive_0093_extract"
+  - "2011_09_28_drive_0039_extract"
+  - "2011_09_28_drive_0002_extract"
+
+# Same training split as default
+train_sequences:
+  "2011_10_03_drive_0042_extract": [0, null]
+  "2011_09_30_drive_0018_extract": [0, 15000]
+  "2011_09_30_drive_0020_extract": [0, null]
+  "2011_09_30_drive_0027_extract": [0, null]
+  "2011_09_30_drive_0033_extract": [0, null]
+  "2011_10_03_drive_0027_extract": [0, 18000]
+  "2011_10_03_drive_0034_extract": [0, 31000]
+  "2011_09_30_drive_0034_extract": [0, null]
+
+val_sequences:
+  "2011_09_30_drive_0028_extract": [11231, 53650]
+
+# All 7 test sequences from AI-IMU paper Table 1
+test_sequences:
+  "2011_10_03_drive_0042_extract": [0, 12180]     # seq 01
+  "2011_09_30_drive_0016_extract": [0, 2950]       # seq 04
+  "2011_09_30_drive_0020_extract": [0, 11347]      # seq 06
+  "2011_09_30_drive_0027_extract": [0, 11545]      # seq 07
+  "2011_09_30_drive_0028_extract": [11231, 53650]   # seq 08
+  "2011_09_30_drive_0033_extract": [0, 16589]       # seq 09
+  "2011_09_30_drive_0034_extract": [0, 12744]       # seq 10
+
+preprocessing:
+  sampling_rate: 100
+  noise:
+    sigma_gyro: 0.0001
+    sigma_acc: 0.001
+    sigma_b_gyro: 0.00001
+    sigma_b_acc: 0.0001
+  normalize: true
+
+coordinate_frame: "ENU"

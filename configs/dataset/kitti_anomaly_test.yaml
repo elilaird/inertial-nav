@@ -1,0 +1,43 @@
+# KITTI dataset config for anomalous sequence evaluation (Eval 4).
+# Test sequences: 00, 02, 05 (documented data gaps / logging artifacts).
+# Full odometry benchmark frame ranges (not training subsets).
+
+name: "kitti"
+
+min_seq_dim: 2500
+
+datasets_fake:
+  - "2011_09_26_drive_0093_extract"
+  - "2011_09_28_drive_0039_extract"
+  - "2011_09_28_drive_0002_extract"
+
+# Same training split as default
+train_sequences:
+  "2011_10_03_drive_0042_extract": [0, null]
+  "2011_09_30_drive_0018_extract": [0, 15000]
+  "2011_09_30_drive_0020_extract": [0, null]
+  "2011_09_30_drive_0027_extract": [0, null]
+  "2011_09_30_drive_0033_extract": [0, null]
+  "2011_10_03_drive_0027_extract": [0, 18000]
+  "2011_10_03_drive_0034_extract": [0, 31000]
+  "2011_09_30_drive_0034_extract": [0, null]
+
+val_sequences:
+  "2011_09_30_drive_0028_extract": [11231, 53650]
+
+# Anomalous sequences with full benchmark frame ranges
+test_sequences:
+  "2011_10_03_drive_0027_extract": [0, 45692]   # seq 00 (data gaps)
+  "2011_10_03_drive_0034_extract": [0, 47935]   # seq 02 (data gaps)
+  "2011_09_30_drive_0018_extract": [0, 28659]   # seq 05 (data gaps)
+
+preprocessing:
+  sampling_rate: 100
+  noise:
+    sigma_gyro: 0.0001
+    sigma_acc: 0.001
+    sigma_b_gyro: 0.00001
+    sigma_b_acc: 0.0001
+  normalize: true
+
+coordinate_frame: "ENU"
