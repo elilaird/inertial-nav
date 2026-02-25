@@ -59,7 +59,6 @@ class WorldModelOutput:
     """(N, 6) predicted smoothed mean of next k normalized IMU timesteps."""
 
 
-
 class IMUFeatureExtractor(nn.Module):
     """
     Shared causal dilated 1D CNN over normalized IMU signals.
@@ -192,7 +191,9 @@ class ProcessDecoder(nn.Module):
             raw_q = self.q_net(z)  # (N, 3)
             # Fix 1: clamp before exp — bounded to [exp(-c), exp(c)]
             Q_bias_scale = torch.exp(
-                torch.clamp(raw_q, min=-self.q_scale_clamp, max=self.q_scale_clamp)
+                torch.clamp(
+                    raw_q, min=-self.q_scale_clamp, max=self.q_scale_clamp
+                )
             )
         else:
             # Fix 3: no Q perturbation
@@ -335,7 +336,9 @@ class LatentWorldModel(BaseCovarianceNet):
                 alpha=proc_cfg.get("alpha", 3.0),
                 weight_scale=weight_scale,
                 bias_scale=bias_scale,
-                use_bias_noise_scaling=proc_cfg.get("use_bias_noise_scaling", True),
+                use_bias_noise_scaling=proc_cfg.get(
+                    "use_bias_noise_scaling", True
+                ),
                 q_scale_clamp=proc_cfg.get("q_scale_clamp", 2.0),
             )
 
@@ -367,7 +370,9 @@ class LatentWorldModel(BaseCovarianceNet):
         # Reparameterization: stochastic sample for process decoder only.
         # Measurement decoder always uses deterministic mu_z (see module docstring).
         if self.training:
-            z_sample = mu_z + torch.exp(self.log_sigma) * torch.randn_like(mu_z)
+            z_sample = mu_z + torch.exp(self.log_sigma) * torch.randn_like(
+                mu_z
+            )
         else:
             z_sample = mu_z
 
@@ -472,11 +477,12 @@ class DualBranchWorldModel(BaseCovarianceNet):
             dropout=local_cnn_dropout,
         )
 
-        self.local_encoder_fc = nn.Sequential(
-            nn.Linear(local_cnn_channels, 2 * local_latent_dim),
-            nn.ReLU(),
-            nn.Linear(2 * local_latent_dim, local_latent_dim),
-        )
+        # self.local_encoder_fc = nn.Sequential(
+        #     nn.Linear(local_cnn_channels, 2 * local_latent_dim),
+        #     nn.ReLU(),
+        #     nn.Linear(2 * local_latent_dim, local_latent_dim),
+        # )
+        self.local_encoder_fc = nn.Linear(local_cnn_channels, local_latent_dim)
 
         # ---- GLOBAL BRANCH: LSTM ----
         self.lstm = nn.LSTM(
@@ -523,7 +529,9 @@ class DualBranchWorldModel(BaseCovarianceNet):
                 alpha=proc_cfg.get("alpha", 3.0),
                 weight_scale=weight_scale,
                 bias_scale=bias_scale,
-                use_bias_noise_scaling=proc_cfg.get("use_bias_noise_scaling", True),
+                use_bias_noise_scaling=proc_cfg.get(
+                    "use_bias_noise_scaling", True
+                ),
                 q_scale_clamp=proc_cfg.get("q_scale_clamp", 2.0),
             )
 
@@ -537,10 +545,10 @@ class DualBranchWorldModel(BaseCovarianceNet):
                 nn.ReLU(),
                 nn.Linear(32, out_dim),
             )
-            for m in head:
-                if isinstance(m, nn.Linear):
-                    m.weight.data.mul_(weight_scale)
-                    m.bias.data.mul_(bias_scale)
+            # for m in head:
+            #     if isinstance(m, nn.Linear):
+            #         m.weight.data.mul_(weight_scale)
+            #         m.bias.data.mul_(bias_scale)
             return head
 
         self.imu_pred_head: Optional[nn.Module] = None
@@ -593,7 +601,9 @@ class DualBranchWorldModel(BaseCovarianceNet):
         # (N, 1, hidden) → (N, hidden)
         lstm_features = lstm_out.squeeze(1)
 
-        mu_global = self.global_encoder_fc(lstm_features)  # (N, global_latent_dim)
+        mu_global = self.global_encoder_fc(
+            lstm_features
+        )  # (N, global_latent_dim)
 
         if self.training:
             z_global = mu_global + torch.exp(
@@ -604,9 +614,13 @@ class DualBranchWorldModel(BaseCovarianceNet):
 
         # ---- KL tensors (global branch only; local is deterministic) ----
         mu_z = mu_global
-        log_var_z = self.log_sigma_global.mul(2).expand(N, self.global_latent_dim)
+        log_var_z = self.log_sigma_global.mul(2).expand(
+            N, self.global_latent_dim
+        )
 
-        out = WorldModelOutput(mu_z=mu_z, log_var_z=log_var_z, mu_local=mu_local)
+        out = WorldModelOutput(
+            mu_z=mu_z, log_var_z=log_var_z, mu_local=mu_local
+        )
 
         # ---- measurement decoder (deterministic mu_local) ----
         if self.measurement_dec is not None and iekf is not None:
@@ -632,7 +646,7 @@ class DualBranchWorldModel(BaseCovarianceNet):
 
         # ---- auxiliary prediction head (optional) ----
         if self.imu_pred_head is not None:
-            out.auxiliary_imu_pred = self.imu_pred_head(mu_global)   # (N, 6)
+            out.auxiliary_imu_pred = self.imu_pred_head(mu_global)  # (N, 6)
 
         return out
 
