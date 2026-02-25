@@ -138,18 +138,29 @@ def _compute_world_model_uncertainty(
     acc_samples = []
     gyro_samples = []
 
-    # For DualBranchWorldModel, mu_z is concatenated [mu_local | mu_global].
-    # Split so each decoder receives only its own latent slice.
-    local_dim = getattr(wm, "local_latent_dim", mu_z.shape[1])
-    mu_meas = mu_z[:, :local_dim]
-    mu_proc = mu_z[:, local_dim:]
-    sigma_meas = sigma_z[:, :local_dim]
-    sigma_proc = sigma_z[:, local_dim:] if mu_proc.shape[1] > 0 else sigma_z
+    # For DualBranchWorldModel: mu_z is global-only; mu_local stored separately.
+    # Measurement decoder uses deterministic mu_local (no sampling).
+    # Process decoder samples z_global (and uses mu_local for "concat" mode).
+    is_dual = hasattr(wm, "local_latent_dim")
+    if is_dual:
+        mu_meas = wm_out_deterministic.mu_local   # (N, local_latent_dim), deterministic
+        mu_proc = mu_z                             # (N, global_latent_dim)
+        sigma_proc = sigma_z                       # (N, global_latent_dim)
+    else:
+        mu_meas = mu_z
+        mu_proc = mu_z
+        sigma_proc = sigma_z
 
     with torch.no_grad():
         for _ in range(n_mc):
-            z_meas = mu_meas + sigma_meas * torch.randn_like(mu_meas)
-            z_proc = mu_proc + sigma_proc * torch.randn_like(mu_proc) if mu_proc.shape[1] > 0 else mu_meas + sigma_meas * torch.randn_like(mu_meas)
+            # Measurement decoder: deterministic for dual-branch, stochastic for single
+            z_meas = mu_meas if is_dual else mu_meas + sigma_z * torch.randn_like(mu_meas)
+            # Process decoder: always sample z_global
+            z_global_sample = mu_proc + sigma_proc * torch.randn_like(mu_proc)
+            if is_dual and getattr(wm, "process_decoder_input", "global") == "concat":
+                z_proc = torch.cat([mu_meas, z_global_sample], dim=1)
+            else:
+                z_proc = z_global_sample
 
             if wm.measurement_dec is not None:
                 meas_cov = wm.measurement_dec(z_meas, iekf.cov0_measurement)

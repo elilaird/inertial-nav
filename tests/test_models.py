@@ -523,9 +523,11 @@ class TestDualBranchWorldModel:
         assert out.measurement_covs.shape == (self.seq_len, 2)
         assert out.acc_bias_corrections.shape == (self.seq_len, 3)
         assert out.gyro_bias_corrections.shape == (self.seq_len, 3)
-        # mu_z and log_var_z are concatenated: local_latent_dim + global_latent_dim
-        assert out.mu_z.shape == (self.seq_len, 4 + 4)
-        assert out.log_var_z.shape == (self.seq_len, 4 + 4)
+        # mu_z / log_var_z contain global branch only (local is deterministic)
+        assert out.mu_z.shape == (self.seq_len, 4)
+        assert out.log_var_z.shape == (self.seq_len, 4)
+        # mu_local stored separately for evaluator / MC sampling
+        assert out.mu_local.shape == (self.seq_len, 4)
 
     def test_measurement_covs_positive(self):
         out = self.model(self.u, self.iekf)
@@ -545,11 +547,8 @@ class TestDualBranchWorldModel:
         self.model.reset_hidden()
         out2_stateless = self.model(u2, self.iekf)
 
-        # Global branch outputs should differ (local branch is identical)
-        # mu_z[:, 4:] is the global part
-        assert not torch.allclose(
-            out2_stateful.mu_z[:, 4:], out2_stateless.mu_z[:, 4:]
-        )
+        # mu_z is global-only; LSTM hidden state causes different outputs
+        assert not torch.allclose(out2_stateful.mu_z, out2_stateless.mu_z)
 
     def test_reset_hidden(self):
         """reset_hidden should clear LSTM state."""
@@ -606,7 +605,7 @@ class TestDualBranchWorldModel:
         assert out.acc_bias_corrections.abs().max() < 0.05
 
     def test_get_output_dim(self):
-        assert self.model.get_output_dim() == 4 + 4  # local + global
+        assert self.model.get_output_dim() == 4  # global branch only
 
     def test_registry(self):
         """DualBranchWorldModel should be in the model registry."""

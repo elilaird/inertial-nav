@@ -6,18 +6,16 @@ LatentWorldModel (single-branch):
     Single latent z with ~17 timestep receptive field.
 
 DualBranchWorldModel (dual-branch):
-    LOCAL:  IMUFeatureExtractor (CNN, ~17 frames) → mu_local → MeasurementDecoder
-    GLOBAL: LSTM (full causal sequence) → mu_global → ProcessDecoder
-    Separates local dynamics (measurement covariance) from long-range context
-    (bias corrections) into two latent branches with appropriate temporal scales.
+    LOCAL:  IMUFeatureExtractor (CNN, ~17 frames) → mu_local (deterministic) → MeasurementDecoder
+    GLOBAL: LSTM (full causal sequence) → mu_global + learnable scalar sigma → ProcessDecoder
+    Local branch is deterministic (no KL); regularized by L2 weight decay.
+    Global branch uses learnable scalar log_sigma_global (init -1, sigma≈0.37) + KL.
+    mu_z / log_var_z contain global branch only for the trainer's KL loss.
 
-Both models use learnable scalar log_sigma for reparameterization and return
-concatenated mu_z / log_var_z for the trainer's KL loss.
-
-Decoder input conventions (both models):
-  - MeasurementDecoder receives deterministic mu (no stochasticity in covariance).
-  - ProcessDecoder receives stochastic z_sample (uncertainty → Q_bias_scale).
-  - At eval: both decoders use mu (no sampling).
+Decoder input conventions:
+  - MeasurementDecoder receives deterministic mu_local.
+  - ProcessDecoder receives z_global_sample (or cat(mu_local, z_global) in "concat" mode).
+  - At eval: ProcessDecoder uses mu_global (no sampling).
 """
 
 from dataclasses import dataclass
@@ -53,6 +51,9 @@ class WorldModelOutput:
 
     log_var_z: Optional[torch.Tensor] = None
     """(N, latent_dim) posterior log-variance, used for KL loss."""
+
+    mu_local: Optional[torch.Tensor] = None
+    """(N, local_latent_dim) deterministic local encoder output (DualBranchWorldModel only)."""
 
 
 class IMUFeatureExtractor(nn.Module):
@@ -471,8 +472,6 @@ class DualBranchWorldModel(BaseCovarianceNet):
             nn.Linear(2 * local_latent_dim, local_latent_dim),
         )
 
-        self.log_sigma_local = nn.Parameter(torch.zeros(1))
-
         # ---- GLOBAL BRANCH: LSTM ----
         self.lstm = nn.LSTM(
             input_size=input_channels,
@@ -488,7 +487,7 @@ class DualBranchWorldModel(BaseCovarianceNet):
             nn.Linear(2 * global_latent_dim, global_latent_dim),
         )
 
-        self.log_sigma_global = nn.Parameter(torch.zeros(1))
+        self.log_sigma_global = nn.Parameter(torch.full((1,), -1.0))
 
         # LSTM hidden state for BPTT continuity
         self._lstm_hidden = None
@@ -556,12 +555,8 @@ class DualBranchWorldModel(BaseCovarianceNet):
         features = self.feature_extractor(u)  # (N, cnn_channels)
         mu_local = self.local_encoder_fc(features)  # (N, local_latent_dim)
 
-        if self.training:
-            z_local = mu_local + torch.exp(self.log_sigma_local) * torch.randn_like(
-                mu_local
-            )
-        else:
-            z_local = mu_local
+        # Local branch is deterministic (no reparameterization); L2 via weight decay
+        z_local = mu_local
 
         # ---- GLOBAL BRANCH (LSTM) ----
         # (1, C, N) → (N, 1, C) for LSTM (seq_len, batch, features)
@@ -579,13 +574,11 @@ class DualBranchWorldModel(BaseCovarianceNet):
         else:
             z_global = mu_global
 
-        # ---- KL tensors (concatenated for trainer compatibility) ----
-        mu_z = torch.cat([mu_local, mu_global], dim=1)
-        log_var_local = self.log_sigma_local.mul(2).expand(N, self.local_latent_dim)
-        log_var_global = self.log_sigma_global.mul(2).expand(N, self.global_latent_dim)
-        log_var_z = torch.cat([log_var_local, log_var_global], dim=1)
+        # ---- KL tensors (global branch only; local is deterministic) ----
+        mu_z = mu_global
+        log_var_z = self.log_sigma_global.mul(2).expand(N, self.global_latent_dim)
 
-        out = WorldModelOutput(mu_z=mu_z, log_var_z=log_var_z)
+        out = WorldModelOutput(mu_z=mu_z, log_var_z=log_var_z, mu_local=mu_local)
 
         # ---- measurement decoder (deterministic mu_local) ----
         if self.measurement_dec is not None and iekf is not None:
@@ -612,5 +605,5 @@ class DualBranchWorldModel(BaseCovarianceNet):
         return out
 
     def get_output_dim(self):
-        """Returns total latent dimension (local + global)."""
-        return self.local_latent_dim + self.global_latent_dim
+        """Returns global latent dimension (mu_z contains global branch only)."""
+        return self.global_latent_dim
