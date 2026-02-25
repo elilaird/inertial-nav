@@ -38,6 +38,14 @@ elif [ "${TYPE}" = "train" ]; then
     COMMAND="HYDRA_FULL_ERROR=1 python src/train.py ${PY_ARGS}"
 elif [ "${TYPE}" = "test" ]; then
     COMMAND="HYDRA_FULL_ERROR=1 python src/test.py ${PY_ARGS}"
+elif [ "${TYPE}" = "posterior_diagnostics" ]; then
+    COMMAND="HYDRA_FULL_ERROR=1 python scripts/eval_posterior_diagnostics.py ${PY_ARGS}"
+elif [ "${TYPE}" = "eval_maneuver_stratified" ]; then
+    COMMAND="HYDRA_FULL_ERROR=1 python scripts/eval_maneuver_stratified.py ${PY_ARGS}"
+elif [ "${TYPE}" = "eval_anomalous_sequences" ]; then
+    COMMAND="HYDRA_FULL_ERROR=1 python scripts/eval_anomalous_sequences.py ${PY_ARGS}"
+elif [ "${TYPE}" = "ablation_table" ]; then
+    COMMAND="python scripts/generate_ablation_table.py ${PY_ARGS}"
 elif [ "${TYPE}" = "pytest" ]; then
     COMMAND="python -m pytest ${PY_ARGS} -v"
 fi

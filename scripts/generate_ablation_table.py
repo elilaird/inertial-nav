@@ -18,6 +18,11 @@ import argparse
 import os
 import pickle
 import numpy as np
+import sys
+
+_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
 from src.evaluation.kitti_sequences import ODOM_TO_DRIVE, DRIVE_TO_ODOM
 
@@ -121,8 +126,12 @@ def _latex_table(rows, conditions, cond_keys):
     lines = [
         r"\begin{tabular}{" + col_spec + r"}",
         r"\toprule",
-        r"Seq & " + " & ".join(f"\\multicolumn{{2}}{{c}}{{{c}}}" for c in conditions) + r" \\",
-        " & " + " & ".join(r"$t_{rel}$\% & $r_{rel}$" for _ in conditions) + r" \\",
+        r"Seq & "
+        + " & ".join(f"\\multicolumn{{2}}{{c}}{{{c}}}" for c in conditions)
+        + r" \\",
+        " & "
+        + " & ".join(r"$t_{rel}$\% & $r_{rel}$" for _ in conditions)
+        + r" \\",
         r"\midrule",
     ]
     for i, row in enumerate(rows):
@@ -142,12 +151,26 @@ def _latex_table(rows, conditions, cond_keys):
 
 def main():
     parser = argparse.ArgumentParser(description="Generate ablation table")
-    parser.add_argument("--results_A", default=None, help="Results dir for Condition A")
-    parser.add_argument("--results_B", default=None, help="Results dir for Condition B")
-    parser.add_argument("--results_C", default=None, help="Results dir for Condition C")
-    parser.add_argument("--results_D", default=None, help="Results dir for Condition D")
-    parser.add_argument("--output", default=None, help="Output file path (default: print to stdout)")
-    parser.add_argument("--format", choices=["markdown", "latex"], default="markdown")
+    parser.add_argument(
+        "--results_A", default=None, help="Results dir for Condition A"
+    )
+    parser.add_argument(
+        "--results_B", default=None, help="Results dir for Condition B"
+    )
+    parser.add_argument(
+        "--results_C", default=None, help="Results dir for Condition C"
+    )
+    parser.add_argument(
+        "--results_D", default=None, help="Results dir for Condition D"
+    )
+    parser.add_argument(
+        "--output",
+        default=None,
+        help="Output file path (default: print to stdout)",
+    )
+    parser.add_argument(
+        "--format", choices=["markdown", "latex"], default="markdown"
+    )
     args = parser.parse_args()
 
     results_by_condition = {
@@ -159,12 +182,16 @@ def main():
 
     # Report which sequences are missing per condition
     for ckey, results in results_by_condition.items():
-        found = set(DRIVE_TO_ODOM.get(d) for d in results if d in DRIVE_TO_ODOM)
+        found = set(
+            DRIVE_TO_ODOM.get(d) for d in results if d in DRIVE_TO_ODOM
+        )
         missing = [n for n in TEST_SEQ_NUMS if n not in found]
         if missing:
             print(f"Condition {ckey}: missing sequences {missing}")
         else:
-            print(f"Condition {ckey}: all {len(TEST_SEQ_NUMS)} sequences found")
+            print(
+                f"Condition {ckey}: all {len(TEST_SEQ_NUMS)} sequences found"
+            )
 
     table = build_table(results_by_condition, fmt=args.format)
 
