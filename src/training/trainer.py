@@ -496,7 +496,7 @@ class Trainer:
             if hasattr(wm, "log_sigma_local"):
                 metrics["train/log_sigma_local"] = wm.log_sigma_local.item()
             if hasattr(wm, "log_sigma_global"):
-                metrics["train/log_sigma_global"] = wm.log_sigma_global.item()
+                metrics["train/log_sigma_global"] = wm.log_sigma_global.mean().item()
             elif hasattr(wm, "log_sigma"):
                 metrics["train/log_sigma"] = wm.log_sigma.item()
         for i, pg in enumerate(self.optimizer.param_groups):
