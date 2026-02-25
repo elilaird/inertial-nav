@@ -78,11 +78,11 @@ networks:
     kl_weight: 0.0
     kl_anneal_epochs: 1
 
-    # Auxiliary IMU prediction loss weight
-    auxiliary_prediction_weight: 1.0
+    # Auxiliary prediction loss weights
+    auxiliary_prediction_weight: 1.0      # smoothed IMU mean (all 6 channels)
 
     # VICReg covariance regularization weight on mu_global
-    vicreg_cov_weight: 1.0
+    vicreg_cov_weight: 0.1
 
     architecture:
       input_channels: 6
@@ -115,10 +115,10 @@ networks:
         use_bias_noise_scaling: false
         q_scale_clamp: 2.0
 
-      # Auxiliary IMU prediction head
+      # Auxiliary prediction head
       auxiliary_prediction:
-        enabled: true
-        prediction_horizon: 10  # Predict mean of next 10 steps (100ms at 100Hz)
+        enabled: true               # smoothed IMU mean prediction (all 6 channels)
+        prediction_horizon: 10      # 100ms lookahead at 100Hz
 
       # Near-zero init so decoders start as identity
       weight_scale: 0.1

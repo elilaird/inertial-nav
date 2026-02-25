@@ -59,6 +59,7 @@ class WorldModelOutput:
     """(N, 6) predicted smoothed mean of next k normalized IMU timesteps."""
 
 
+
 class IMUFeatureExtractor(nn.Module):
     """
     Shared causal dilated 1D CNN over normalized IMU signals.
@@ -526,21 +527,27 @@ class DualBranchWorldModel(BaseCovarianceNet):
                 q_scale_clamp=proc_cfg.get("q_scale_clamp", 2.0),
             )
 
-        # ---- AUXILIARY IMU PREDICTION HEAD (optional) ----
+        # ---- AUXILIARY PREDICTION HEADS (optional) ----
         aux_cfg = dict(auxiliary_prediction or {})
-        self.imu_pred_head: Optional[nn.Module] = None
         self.prediction_horizon: int = 0
-        if aux_cfg.get("enabled", False):
-            self.prediction_horizon = aux_cfg.get("prediction_horizon", 10)
-            self.imu_pred_head = nn.Sequential(
+
+        def _make_head(out_dim: int) -> nn.Sequential:
+            head = nn.Sequential(
                 nn.Linear(global_latent_dim, 32),
                 nn.ReLU(),
-                nn.Linear(32, input_channels),
+                nn.Linear(32, out_dim),
             )
-            for m in self.imu_pred_head:
+            for m in head:
                 if isinstance(m, nn.Linear):
                     m.weight.data.mul_(weight_scale)
                     m.bias.data.mul_(bias_scale)
+            return head
+
+        self.imu_pred_head: Optional[nn.Module] = None
+
+        if aux_cfg.get("enabled", False):
+            self.prediction_horizon = aux_cfg.get("prediction_horizon", 10)
+            self.imu_pred_head = _make_head(input_channels)
 
     # ------------------------------------------------------------------ #
     # LSTM state management (for BPTT)
@@ -623,9 +630,9 @@ class DualBranchWorldModel(BaseCovarianceNet):
             out.acc_bias_corrections = delta_b_a
             out.bias_noise_scaling = Q_bias_scale
 
-        # ---- auxiliary IMU prediction (optional) ----
+        # ---- auxiliary prediction head (optional) ----
         if self.imu_pred_head is not None:
-            out.auxiliary_imu_pred = self.imu_pred_head(mu_global)  # (N, 6)
+            out.auxiliary_imu_pred = self.imu_pred_head(mu_global)   # (N, 6)
 
         return out
 

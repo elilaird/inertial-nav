@@ -564,7 +564,12 @@ class Trainer:
         if wm is not None and hasattr(wm, "reset_hidden"):
             wm.reset_hidden()
 
-        totals = {"loss": 0.0, "kl": 0.0, "aux_imu": 0.0, "vicreg_cov": 0.0}
+        totals = {
+            "loss": 0.0,
+            "kl": 0.0,
+            "aux_imu": 0.0,
+            "vicreg_cov": 0.0,
+        }
         n_valid = 0
         n_skipped = 0
         gnorms = []
@@ -676,8 +681,12 @@ class Trainer:
                 d = Z.shape[1]
                 if Z.shape[0] > 1:
                     Z_c = Z - Z.mean(dim=0)
-                    cov = (Z_c.T @ Z_c) / (Z.shape[0] - 1)
-                    cov_loss = (cov.pow(2).sum() - cov.pow(2).diagonal().sum()) / d
+                    std = Z_c.std(dim=0, unbiased=True).clamp(min=1e-6)
+                    Z_n = Z_c / std  # correlation matrix (unit-variance per dim)
+                    cov = (Z_n.T @ Z_n) / (Z.shape[0] - 1)
+                    cov_loss = (
+                        cov.pow(2).sum() - cov.pow(2).diagonal().sum()
+                    ) / d
                     chunk_cov = (self.vicreg_cov_weight * cov_loss).item()
                     loss = loss + self.vicreg_cov_weight * cov_loss
 
@@ -854,9 +863,13 @@ class Trainer:
             u_norm = self.model.normalize_u(u)  # (N, 6)
             N_seq = u_norm.shape[0]
             if N_seq > k:
-                u_target = u_norm[1:].unfold(0, k, 1).mean(dim=2)  # (N_seq-k, 6)
+                u_target = (
+                    u_norm[1:].unfold(0, k, 1).mean(dim=2)
+                )  # (N_seq-k, 6)
                 pred = wm_out.auxiliary_imu_pred[: N_seq - k]
-                aux_loss = torch.nn.functional.mse_loss(pred, u_target.detach())
+                aux_loss = torch.nn.functional.mse_loss(
+                    pred, u_target.detach()
+                )
                 losses["aux_imu"] = (self.aux_pred_weight * aux_loss).item()
                 loss = loss + self.aux_pred_weight * aux_loss
 
@@ -871,9 +884,13 @@ class Trainer:
             d = Z.shape[1]
             if Z.shape[0] > 1:
                 Z_c = Z - Z.mean(dim=0)
-                cov = (Z_c.T @ Z_c) / (Z.shape[0] - 1)
+                std = Z_c.std(dim=0, unbiased=True).clamp(min=1e-6)
+                Z_n = Z_c / std  # correlation matrix (unit-variance per dim)
+                cov = (Z_n.T @ Z_n) / (Z.shape[0] - 1)
                 cov_loss = (cov.pow(2).sum() - cov.pow(2).diagonal().sum()) / d
-                losses["vicreg_cov"] = (self.vicreg_cov_weight * cov_loss).item()
+                losses["vicreg_cov"] = (
+                    self.vicreg_cov_weight * cov_loss
+                ).item()
                 loss = loss + self.vicreg_cov_weight * cov_loss
 
         # Loss clamping (Huber-like): clamp loss to max_loss so gradients still flow
