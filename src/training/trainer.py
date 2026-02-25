@@ -488,6 +488,15 @@ class Trainer:
             )
         if sigma_z_epoch:
             metrics["train/sigma_z"] = float(np.mean(sigma_z_epoch))
+        # Log per-branch log_sigma for DualBranchWorldModel diagnostics
+        wm = getattr(self.model, "world_model", None)
+        if wm is not None:
+            if hasattr(wm, "log_sigma_local"):
+                metrics["train/log_sigma_local"] = wm.log_sigma_local.item()
+            if hasattr(wm, "log_sigma_global"):
+                metrics["train/log_sigma_global"] = wm.log_sigma_global.item()
+            elif hasattr(wm, "log_sigma"):
+                metrics["train/log_sigma"] = wm.log_sigma.item()
         for i, pg in enumerate(self.optimizer.param_groups):
             metrics[f"train/lr_group{i}"] = pg["lr"]
         return metrics

@@ -75,7 +75,7 @@ networks:
     type: "DualBranchWorldModel"
 
     # KL regularization (beta-VAE weighting)
-    kl_weight: 1.0e-5
+    kl_weight: 5.0e-5
     kl_anneal_epochs: 1
 
     architecture:
