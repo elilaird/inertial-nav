@@ -55,6 +55,9 @@ class WorldModelOutput:
     mu_local: Optional[torch.Tensor] = None
     """(N, local_latent_dim) deterministic local encoder output (DualBranchWorldModel only)."""
 
+    auxiliary_imu_pred: Optional[torch.Tensor] = None
+    """(N, 6) predicted smoothed mean of next k normalized IMU timesteps."""
+
 
 class IMUFeatureExtractor(nn.Module):
     """
@@ -448,6 +451,8 @@ class DualBranchWorldModel(BaseCovarianceNet):
         # Decoders
         measurement_decoder: Optional[dict] = None,
         process_decoder: Optional[dict] = None,
+        # Auxiliary IMU prediction head
+        auxiliary_prediction: Optional[dict] = None,
         # Init scales
         weight_scale: float = 0.01,
         bias_scale: float = 0.01,
@@ -520,6 +525,22 @@ class DualBranchWorldModel(BaseCovarianceNet):
                 use_bias_noise_scaling=proc_cfg.get("use_bias_noise_scaling", True),
                 q_scale_clamp=proc_cfg.get("q_scale_clamp", 2.0),
             )
+
+        # ---- AUXILIARY IMU PREDICTION HEAD (optional) ----
+        aux_cfg = dict(auxiliary_prediction or {})
+        self.imu_pred_head: Optional[nn.Module] = None
+        self.prediction_horizon: int = 0
+        if aux_cfg.get("enabled", False):
+            self.prediction_horizon = aux_cfg.get("prediction_horizon", 10)
+            self.imu_pred_head = nn.Sequential(
+                nn.Linear(global_latent_dim, 32),
+                nn.ReLU(),
+                nn.Linear(32, input_channels),
+            )
+            for m in self.imu_pred_head:
+                if isinstance(m, nn.Linear):
+                    m.weight.data.mul_(weight_scale)
+                    m.bias.data.mul_(bias_scale)
 
     # ------------------------------------------------------------------ #
     # LSTM state management (for BPTT)
@@ -601,6 +622,10 @@ class DualBranchWorldModel(BaseCovarianceNet):
             out.gyro_bias_corrections = delta_b_omega
             out.acc_bias_corrections = delta_b_a
             out.bias_noise_scaling = Q_bias_scale
+
+        # ---- auxiliary IMU prediction (optional) ----
+        if self.imu_pred_head is not None:
+            out.auxiliary_imu_pred = self.imu_pred_head(mu_global)  # (N, 6)
 
         return out
 

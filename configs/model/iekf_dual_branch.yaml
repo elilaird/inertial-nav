@@ -74,9 +74,12 @@ networks:
     enabled: true
     type: "DualBranchWorldModel"
 
-    # KL regularization (beta-VAE weighting)
-    kl_weight: 5.0e-5
+    # KL regularization (disabled; replaced by auxiliary prediction)
+    kl_weight: 0.0
     kl_anneal_epochs: 1
+
+    # Auxiliary IMU prediction loss weight
+    auxiliary_prediction_weight: 1.0
 
     architecture:
       input_channels: 6
@@ -108,6 +111,11 @@ networks:
         alpha: 3.0
         use_bias_noise_scaling: false
         q_scale_clamp: 2.0
+
+      # Auxiliary IMU prediction head
+      auxiliary_prediction:
+        enabled: true
+        prediction_horizon: 10  # Predict mean of next 10 steps (100ms at 100Hz)
 
       # Near-zero init so decoders start as identity
       weight_scale: 0.1

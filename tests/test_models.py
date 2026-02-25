@@ -637,6 +637,34 @@ class TestDualBranchWorldModel:
         assert out.mu_z is not None
         assert out.log_var_z is not None
 
+    def test_auxiliary_head_shapes(self):
+        """Auxiliary IMU prediction head should output (N, 6)."""
+        model = self._make_model(
+            auxiliary_prediction={"enabled": True, "prediction_horizon": 10},
+        )
+        out = model(self.u, self.iekf)
+        assert out.auxiliary_imu_pred is not None
+        assert out.auxiliary_imu_pred.shape == (self.seq_len, 6)
+
+    def test_auxiliary_head_disabled(self):
+        """Without auxiliary head, auxiliary_imu_pred should be None."""
+        out = self.model(self.u, self.iekf)
+        assert out.auxiliary_imu_pred is None
+
+    def test_auxiliary_gradient_to_lstm(self):
+        """Backprop through auxiliary prediction should give LSTM gradients."""
+        model = self._make_model(
+            auxiliary_prediction={"enabled": True, "prediction_horizon": 10},
+        )
+        model.train()
+        out = model(self.u, self.iekf)
+        loss = out.auxiliary_imu_pred.sum()
+        loss.backward()
+
+        lstm_weight = list(model.lstm.parameters())[0]
+        assert lstm_weight.grad is not None
+        assert lstm_weight.grad.abs().sum() > 0
+
 
 # ==================== TorchIEKF + WorldModel Integration ====================
 

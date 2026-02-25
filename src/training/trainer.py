@@ -73,6 +73,7 @@ class Trainer:
         )
         self.kl_weight = wm_cfg.get("kl_weight", 0.0)
         self.kl_anneal_epochs = wm_cfg.get("kl_anneal_epochs", 50)
+        self.aux_pred_weight = wm_cfg.get("auxiliary_prediction_weight", 0.0)
         self.current_epoch = 0
 
         # Gradient clipping
@@ -562,7 +563,7 @@ class Trainer:
         if wm is not None and hasattr(wm, "reset_hidden"):
             wm.reset_hidden()
 
-        totals = {"loss": 0.0, "kl": 0.0}
+        totals = {"loss": 0.0, "kl": 0.0, "aux_imu": 0.0}
         n_valid = 0
         n_skipped = 0
         gnorms = []
@@ -641,6 +642,28 @@ class Trainer:
                 chunk_kl = (self.kl_weight * anneal * kl).item()
                 loss = loss + self.kl_weight * anneal * kl
 
+            # Auxiliary IMU prediction loss (per-chunk)
+            chunk_aux = 0.0
+            if (
+                self.aux_pred_weight > 0
+                and wm_c is not None
+                and wm_c.auxiliary_imu_pred is not None
+            ):
+                k = wm.prediction_horizon
+                ce_ext = min(ce + k, N)
+                u_norm_ext = self.model.normalize_u(u[cs:ce_ext])
+                chunk_len = ce - cs
+                if u_norm_ext.shape[0] > k:
+                    u_target = u_norm_ext[1:].unfold(0, k, 1).mean(dim=2)
+                    n_valid_pred = min(chunk_len, u_target.shape[0])
+                    pred = wm_c.auxiliary_imu_pred[:n_valid_pred]
+                    u_target = u_target[:n_valid_pred]
+                    aux_loss = torch.nn.functional.mse_loss(
+                        pred, u_target.detach()
+                    )
+                    chunk_aux = (self.aux_pred_weight * aux_loss).item()
+                    loss = loss + self.aux_pred_weight * aux_loss
+
             # Loss clamping and skipping
             max_loss = self.loss_cfg.get("max_loss", None)
             if max_loss is not None and isinstance(loss, torch.Tensor):
@@ -677,6 +700,7 @@ class Trainer:
                 n_valid += 1
                 totals["loss"] += loss.item()
                 totals["kl"] += chunk_kl
+                totals["aux_imu"] += chunk_aux
                 gnorms.append(float(g_norm))
                 if wm_c is not None and wm_c.log_var_z is not None:
                     sigma_z_vals.append(
@@ -800,6 +824,23 @@ class Trainer:
             anneal = 1.0
             losses["kl"] = (self.kl_weight * anneal * kl).item()
             loss = loss + self.kl_weight * anneal * kl
+
+        # Auxiliary IMU prediction loss (DualBranchWorldModel)
+        if (
+            isinstance(loss, torch.Tensor)
+            and self.aux_pred_weight > 0
+            and wm_out is not None
+            and wm_out.auxiliary_imu_pred is not None
+        ):
+            k = wm.prediction_horizon
+            u_norm = self.model.normalize_u(u)  # (N, 6)
+            N_seq = u_norm.shape[0]
+            if N_seq > k:
+                u_target = u_norm[1:].unfold(0, k, 1).mean(dim=2)  # (N_seq-k, 6)
+                pred = wm_out.auxiliary_imu_pred[: N_seq - k]
+                aux_loss = torch.nn.functional.mse_loss(pred, u_target.detach())
+                losses["aux_imu"] = (self.aux_pred_weight * aux_loss).item()
+                loss = loss + self.aux_pred_weight * aux_loss
 
         # Loss clamping (Huber-like): clamp loss to max_loss so gradients still flow
         max_loss = self.loss_cfg.get("max_loss", None)
