@@ -79,7 +79,7 @@ networks:
     kl_anneal_epochs: 1
 
     # Auxiliary prediction loss weights
-    auxiliary_prediction_weight: 1.0      # smoothed IMU mean (all 6 channels)
+    auxiliary_prediction_weight: 0.2     # smoothed IMU mean (all 6 channels)
 
     # VICReg covariance regularization weight on mu_global
     vicreg_cov_weight: 0.1
@@ -118,7 +118,7 @@ networks:
       # Auxiliary prediction head
       auxiliary_prediction:
         enabled: true               # smoothed IMU mean prediction (all 6 channels)
-        prediction_horizon: 10      # 100ms lookahead at 100Hz
+        prediction_horizon: 50      # 500ms lookahead at 100Hz
 
       # Near-zero init so decoders start as identity
       weight_scale: 0.1

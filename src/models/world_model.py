@@ -477,11 +477,6 @@ class DualBranchWorldModel(BaseCovarianceNet):
             dropout=local_cnn_dropout,
         )
 
-        # self.local_encoder_fc = nn.Sequential(
-        #     nn.Linear(local_cnn_channels, 2 * local_latent_dim),
-        #     nn.ReLU(),
-        #     nn.Linear(2 * local_latent_dim, local_latent_dim),
-        # )
         self.local_encoder_fc = nn.Linear(local_cnn_channels, local_latent_dim)
 
         # ---- GLOBAL BRANCH: LSTM ----
@@ -493,13 +488,9 @@ class DualBranchWorldModel(BaseCovarianceNet):
             batch_first=False,
         )
 
-        self.global_encoder_fc = nn.Sequential(
-            nn.Linear(global_lstm_hidden, 2 * global_latent_dim),
-            nn.ReLU(),
-            nn.Linear(2 * global_latent_dim, global_latent_dim),
-        )
+        self.global_encoder_fc = nn.Linear(global_lstm_hidden, global_latent_dim)
 
-        self.log_sigma_global = nn.Parameter(torch.full((1,), -1.0))
+        self.log_sigma_global = nn.Parameter(torch.full((global_latent_dim,), -1.0))
 
         # LSTM hidden state for BPTT continuity
         self._lstm_hidden = None
